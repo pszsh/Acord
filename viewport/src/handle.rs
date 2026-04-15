@@ -20,10 +20,14 @@ struct MacClipboard;
 
 impl clipboard::Clipboard for MacClipboard {
     fn read(&self, _kind: clipboard::Kind) -> Option<String> {
+        // `from_utf8_lossy` rather than strict `from_utf8` — some rich-text
+        // clipboard sources produce stray bytes when pbpaste coerces their
+        // format to plain text, and a single bad byte would otherwise drop
+        // the whole paste.
         std::process::Command::new("pbpaste")
             .output()
             .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
     }
 
     fn write(&mut self, _kind: clipboard::Kind, contents: String) {
