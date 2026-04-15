@@ -24,10 +24,19 @@ impl clipboard::Clipboard for MacClipboard {
         // clipboard sources produce stray bytes when pbpaste coerces their
         // format to plain text, and a single bad byte would otherwise drop
         // the whole paste.
+        //
+        // Line-ending normalisation: web pages, Discord, and some cross-
+        // platform apps keep `\r\n` in the pasteboard. Iced's buffer and
+        // our own gutter line counter disagree about whether `\r` is its
+        // own row, which drifts the gutter against the cursor on every
+        // paste. Collapse every CR to LF before handing the text upward.
         std::process::Command::new("pbpaste")
             .output()
             .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .map(|o| {
+                let s = String::from_utf8_lossy(&o.stdout).into_owned();
+                s.replace("\r\n", "\n").replace('\r', "\n")
+            })
     }
 
     fn write(&mut self, _kind: clipboard::Kind, contents: String) {
