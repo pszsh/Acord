@@ -1,0 +1,12 @@
+language = "C"
+include_guard = "ACORD_VIEWPORT_H"
+header = """
+#include <stdarg.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include "../../core/include/acord.h"
+"""
+
+[parse]
+parse_deps = false

@@ -1,0 +1,891 @@
+use std::ops::Range;
+
+use iced_wgpu::core::text::highlighter;
+use iced_wgpu::core::{Color, Font};
+use iced_wgpu::core::font::{Weight, Style as FontStyle};
+use acord_core::highlight::{highlight_source, HighlightSpan};
+use acord_core::doc::{classify_document, LineKind};
+use crate::editor::{RESULT_PREFIX, ERROR_PREFIX};
+use crate::palette;
+
+pub const EVAL_RESULT_KIND: u8 = 24;
+pub const EVAL_ERROR_KIND: u8 = 25;
+
+// --- Cordial (eval-line) tokens. Start at 50 to leave room above the
+// markdown range. A single hand-rolled scanner (`highlight_cordial`) dispatches
+// on these so every Cordial visual element — the `/=` sigil, the `@` ref
+// prefix, `::`, table/block names, cell addresses, keywords, builtins,
+// numbers, strings, comments — gets its own color.
+const COR_EVAL_SIGIL: u8 = 50;
+const COR_AT_SIGIL: u8 = 51;
+const COR_COLON_COLON: u8 = 52;
+const COR_REF_COLON: u8 = 53;
+const COR_TABLE_NAME: u8 = 54;
+const COR_BLOCK_NAME: u8 = 55;
+const COR_CELL_ADDR: u8 = 56;
+const COR_KEYWORD: u8 = 57;
+const COR_BUILTIN_FN: u8 = 58;
+const COR_NUMBER: u8 = 59;
+const COR_STRING: u8 = 60;
+const COR_COMMENT: u8 = 61;
+const COR_OPERATOR: u8 = 62;
+const COR_BRACKET: u8 = 63;
+const COR_TYPE_ANN: u8 = 64;
+
+const MD_HEADING_MARKER: u8 = 26;
+const MD_H1: u8 = 27;
+const MD_H2: u8 = 28;
+const MD_H3: u8 = 29;
+const MD_BOLD: u8 = 30;
+const MD_ITALIC: u8 = 31;
+const MD_INLINE_CODE: u8 = 32;
+const MD_FORMAT_MARKER: u8 = 33;
+const MD_LINK_TEXT: u8 = 34;
+const MD_LINK_URL: u8 = 35;
+const MD_BLOCKQUOTE_MARKER: u8 = 36;
+const MD_BLOCKQUOTE: u8 = 37;
+const MD_LIST_MARKER: u8 = 38;
+const MD_FENCE_MARKER: u8 = 39;
+const MD_CODE_BLOCK: u8 = 40;
+const MD_HR: u8 = 41;
+const MD_TASK_OPEN: u8 = 42;
+const MD_TASK_DONE: u8 = 43;
+const MD_BOLD_ITALIC: u8 = 44;
+
+/// The monospace family used for the editor body and every inline highlight
+/// span. Naming the family explicitly (rather than `Family::Monospace`) forces
+/// cosmic-text / fontdb to resolve real Bold, Italic and BoldItalic faces,
+/// which the generic monospace fallback does not reliably do on macOS because
+/// cosmic-text hardcodes its default monospace family to "Noto Sans Mono".
+#[cfg(target_os = "macos")]
+pub const EDITOR_FONT: Font = Font::with_name("Menlo");
+#[cfg(target_os = "windows")]
+pub const EDITOR_FONT: Font = Font::with_name("Consolas");
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub const EDITOR_FONT: Font = Font::with_name("DejaVu Sans Mono");
+
+#[derive(Clone, PartialEq)]
+pub struct SyntaxSettings {
+    pub lang: String,
+    pub source: String,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SyntaxHighlight {
+    pub kind: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LineDecor {
+    None,
+    CodeBlock,
+    Blockquote,
+    HorizontalRule,
+    FenceMarker,
+}
+
+pub struct SyntaxHighlighter {
+    lang: String,
+    spans: Vec<HighlightSpan>,
+    line_offsets: Vec<usize>,
+    line_kinds: Vec<LineKind>,
+    in_fenced_code: bool,
+    current_line: usize,
+    line_decors: Vec<LineDecor>,
+}
+
+impl SyntaxHighlighter {
+    fn rebuild(&mut self, source: &str) {
+        self.spans = highlight_source(source, &self.lang);
+        self.line_offsets.clear();
+        let mut offset = 0;
+        for line in source.split('\n') {
+            self.line_offsets.push(offset);
+            offset += line.len() + 1;
+        }
+        let classified = classify_document(source);
+        self.line_kinds = classified.into_iter().map(|cl| cl.kind).collect();
+
+        self.line_decors.clear();
+        let mut in_fence = false;
+        for (i, raw_line) in source.split('\n').enumerate() {
+            let is_md = i < self.line_kinds.len() && self.line_kinds[i] == LineKind::Markdown;
+            if is_md {
+                let trimmed = raw_line.trim_start();
+                if trimmed.starts_with("```") {
+                    in_fence = !in_fence;
+                    self.line_decors.push(LineDecor::FenceMarker);
+                } else if in_fence {
+                    self.line_decors.push(LineDecor::CodeBlock);
+                } else if is_horizontal_rule(trimmed) {
+                    self.line_decors.push(LineDecor::HorizontalRule);
+                } else if trimmed.starts_with("> ") || trimmed == ">" {
+                    self.line_decors.push(LineDecor::Blockquote);
+                } else {
+                    self.line_decors.push(LineDecor::None);
+                }
+            } else {
+                if in_fence { in_fence = false; }
+                self.line_decors.push(LineDecor::None);
+            }
+        }
+
+        self.in_fenced_code = false;
+        self.current_line = 0;
+    }
+
+    fn highlight_markdown(&self, line: &str) -> Vec<(Range<usize>, SyntaxHighlight)> {
+        let trimmed = line.trim_start();
+        let leading = line.len() - trimmed.len();
+
+        if is_horizontal_rule(trimmed) {
+            return vec![(0..line.len(), SyntaxHighlight { kind: MD_HR })];
+        }
+
+        if let Some(level) = heading_level(trimmed) {
+            let marker_end = leading + level + 1;
+            let kind = match level {
+                1 => MD_H1,
+                2 => MD_H2,
+                _ => MD_H3,
+            };
+            let mut spans = vec![
+                (0..marker_end, SyntaxHighlight { kind: MD_HEADING_MARKER }),
+            ];
+            if marker_end < line.len() {
+                spans.push((marker_end..line.len(), SyntaxHighlight { kind }));
+            }
+            return spans;
+        }
+
+        if trimmed.starts_with("> ") || trimmed == ">" {
+            let marker_end = leading + if trimmed.len() > 1 { 2 } else { 1 };
+            let mut spans = vec![
+                (0..marker_end, SyntaxHighlight { kind: MD_BLOCKQUOTE_MARKER }),
+            ];
+            if marker_end < line.len() {
+                let content = &line[marker_end..];
+                let inner = parse_inline(content, marker_end);
+                if inner.is_empty() {
+                    spans.push((marker_end..line.len(), SyntaxHighlight { kind: MD_BLOCKQUOTE }));
+                } else {
+                    spans.extend(inner);
+                }
+            }
+            return spans;
+        }
+
+        if let Some(list_info) = list_marker_info(trimmed) {
+            let (marker_len, marker_kind) = match list_info {
+                ListKind::TaskOpen(n) => (n, MD_TASK_OPEN),
+                ListKind::TaskDone(n) => (n, MD_TASK_DONE),
+                ListKind::Plain(n) => (n, MD_LIST_MARKER),
+            };
+            let marker_end = leading + marker_len;
+            let mut spans = vec![
+                (0..marker_end, SyntaxHighlight { kind: marker_kind }),
+            ];
+            if marker_end < line.len() {
+                let content = &line[marker_end..];
+                let inner = parse_inline(content, marker_end);
+                if inner.is_empty() {
+                    return spans;
+                }
+                spans.extend(inner);
+            }
+            return spans;
+        }
+
+        parse_inline(line, 0)
+    }
+}
+
+/// Scan a Cordial line (or an eval line) and emit per-token highlight
+/// spans. Idempotent, single-pass; each branch either consumes a whole
+/// token or advances one byte. Unknown bytes get no highlight (they fall
+/// through to the editor's default text color).
+fn highlight_cordial(line: &str) -> Vec<(Range<usize>, SyntaxHighlight)> {
+    let bytes = line.as_bytes();
+    let len = bytes.len();
+    let mut spans: Vec<(Range<usize>, SyntaxHighlight)> = Vec::new();
+    let mut i = 0;
+
+    // Opening `/=`, `/=|`, `/=\` sigil (with optional leading whitespace).
+    let leading = line.len() - line.trim_start().len();
+    if leading + 2 <= len && &bytes[leading..leading + 2] == b"/=" {
+        let sigil_end = if leading + 3 <= len
+            && (bytes[leading + 2] == b'|' || bytes[leading + 2] == b'\\')
+        {
+            leading + 3
+        } else {
+            leading + 2
+        };
+        spans.push((leading..sigil_end, SyntaxHighlight { kind: COR_EVAL_SIGIL }));
+        i = sigil_end;
+    }
+
+    while i < len {
+        let c = bytes[i];
+
+        // Whitespace: skip.
+        if c == b' ' || c == b'\t' || c == b'\r' {
+            i += 1;
+            continue;
+        }
+
+        // Line comment: `// …` — rest of line.
+        if c == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
+            spans.push((i..len, SyntaxHighlight { kind: COR_COMMENT }));
+            break;
+        }
+
+        // String literal.
+        if c == b'"' {
+            let start = i;
+            i += 1;
+            while i < len && bytes[i] != b'"' {
+                if bytes[i] == b'\\' && i + 1 < len { i += 2; } else { i += 1; }
+            }
+            if i < len { i += 1; }
+            spans.push((start..i, SyntaxHighlight { kind: COR_STRING }));
+            continue;
+        }
+
+        // `@` cell reference: @[Block::]Table[:A1[:B4]] or @T[A1:B4].
+        if c == b'@' {
+            spans.push((i..i + 1, SyntaxHighlight { kind: COR_AT_SIGIL }));
+            i += 1;
+            // First ident.
+            let n1_start = i;
+            while i < len && is_ident_byte(bytes[i]) { i += 1; }
+            let n1_end = i;
+            // Is it a block qualifier? Look for `::` after.
+            if i + 1 < len && bytes[i] == b':' && bytes[i + 1] == b':' {
+                if n1_end > n1_start {
+                    spans.push((n1_start..n1_end, SyntaxHighlight { kind: COR_BLOCK_NAME }));
+                }
+                spans.push((i..i + 2, SyntaxHighlight { kind: COR_COLON_COLON }));
+                i += 2;
+                let t_start = i;
+                while i < len && is_ident_byte(bytes[i]) { i += 1; }
+                if i > t_start {
+                    spans.push((t_start..i, SyntaxHighlight { kind: COR_TABLE_NAME }));
+                }
+            } else if n1_end > n1_start {
+                spans.push((n1_start..n1_end, SyntaxHighlight { kind: COR_TABLE_NAME }));
+            }
+            // Optional `:A1` or `:A1:B2` cell/range target.
+            if i < len && bytes[i] == b':' {
+                spans.push((i..i + 1, SyntaxHighlight { kind: COR_REF_COLON }));
+                i += 1;
+                i = consume_cell_addr(bytes, i, &mut spans);
+                if i < len && bytes[i] == b':' {
+                    spans.push((i..i + 1, SyntaxHighlight { kind: COR_REF_COLON }));
+                    i += 1;
+                    i = consume_cell_addr(bytes, i, &mut spans);
+                }
+            } else if i < len && bytes[i] == b'[' {
+                // Bracket range: `[A1:B2]`.
+                spans.push((i..i + 1, SyntaxHighlight { kind: COR_BRACKET }));
+                i += 1;
+                i = consume_cell_addr(bytes, i, &mut spans);
+                if i < len && bytes[i] == b':' {
+                    spans.push((i..i + 1, SyntaxHighlight { kind: COR_REF_COLON }));
+                    i += 1;
+                    i = consume_cell_addr(bytes, i, &mut spans);
+                }
+                if i < len && bytes[i] == b']' {
+                    spans.push((i..i + 1, SyntaxHighlight { kind: COR_BRACKET }));
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        // Numeric literal (integer or decimal, with optional leading `-`
+        // in operator-valid position — keep it simple: only recognise as
+        // a number when we're right after an operator or at the start of
+        // whitespace, otherwise leave `-` to the operator scanner).
+        if c.is_ascii_digit()
+            || (c == b'.' && i + 1 < len && bytes[i + 1].is_ascii_digit())
+        {
+            let start = i;
+            while i < len && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+                i += 1;
+            }
+            spans.push((start..i, SyntaxHighlight { kind: COR_NUMBER }));
+            continue;
+        }
+
+        // Identifier → keyword / builtin / plain. Plain idents get no
+        // highlight so user-defined names stay in the default editor
+        // color — keeps the document from looking like confetti.
+        if is_ident_byte(c) && !c.is_ascii_digit() {
+            let start = i;
+            while i < len && is_ident_byte(bytes[i]) { i += 1; }
+            let word = &line[start..i];
+            if is_cordial_keyword(word) {
+                spans.push((start..i, SyntaxHighlight { kind: COR_KEYWORD }));
+            } else if is_cordial_builtin(word) {
+                spans.push((start..i, SyntaxHighlight { kind: COR_BUILTIN_FN }));
+            } else if is_cordial_type_annotation(word) && last_token_is_colon(&spans) {
+                // Type annotation immediately after `:` in a `let x: T = …`
+                // reads the type name; give it the yellow/type color.
+                spans.push((start..i, SyntaxHighlight { kind: COR_TYPE_ANN }));
+            }
+            continue;
+        }
+
+        // `::` as a namespace separator outside of a ref (e.g. `use mod::item`).
+        if c == b':' && i + 1 < len && bytes[i + 1] == b':' {
+            spans.push((i..i + 2, SyntaxHighlight { kind: COR_COLON_COLON }));
+            i += 2;
+            continue;
+        }
+
+        // Plain `:` — likely a type annotation colon in `let x: T = …`.
+        if c == b':' {
+            spans.push((i..i + 1, SyntaxHighlight { kind: COR_REF_COLON }));
+            i += 1;
+            continue;
+        }
+
+        // Bracket / brace / paren — separate color from operators.
+        if matches!(c, b'(' | b')' | b'{' | b'}' | b'[' | b']' | b',') {
+            spans.push((i..i + 1, SyntaxHighlight { kind: COR_BRACKET }));
+            i += 1;
+            continue;
+        }
+
+        // Operator run: consume a contiguous block of operator bytes.
+        if is_operator_byte(c) {
+            let start = i;
+            while i < len && is_operator_byte(bytes[i]) { i += 1; }
+            spans.push((start..i, SyntaxHighlight { kind: COR_OPERATOR }));
+            continue;
+        }
+
+        i += 1;
+    }
+
+    spans
+}
+
+fn consume_cell_addr(
+    bytes: &[u8],
+    start: usize,
+    spans: &mut Vec<(Range<usize>, SyntaxHighlight)>,
+) -> usize {
+    let mut i = start;
+    while i < bytes.len() && bytes[i].is_ascii_alphabetic() { i += 1; }
+    let letters_end = i;
+    while i < bytes.len() && bytes[i].is_ascii_digit() { i += 1; }
+    // Only tag as a cell address when we matched BOTH letters AND digits —
+    // otherwise we're looking at a bare identifier or a digit run that
+    // some other branch should have handled.
+    if i > start && letters_end > start && i > letters_end {
+        spans.push((start..i, SyntaxHighlight { kind: COR_CELL_ADDR }));
+    }
+    i
+}
+
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+fn is_operator_byte(b: u8) -> bool {
+    matches!(b, b'+' | b'-' | b'*' | b'/' | b'%' | b'^'
+        | b'=' | b'<' | b'>' | b'!' | b'~' | b'&' | b'|' | b'.')
+}
+
+fn is_cordial_keyword(w: &str) -> bool {
+    matches!(w, "let" | "fn" | "if" | "else" | "while" | "for" | "in"
+        | "return" | "use" | "is" | "true" | "false" | "and" | "or" | "not"
+        // Function-inversion DSL — two forms:
+        //   programmer:  let lfreq = solve!(l, f0)   // or `solve!(l from f0)`
+        //   math:        let lfreq(freq, c) = l where f0(l, c) = freq
+        | "solve" | "where" | "from")
+}
+
+fn is_cordial_builtin(w: &str) -> bool {
+    matches!(w,
+        // math
+        "sin" | "cos" | "tan" | "asin" | "acos" | "atan"
+        | "sqrt" | "abs" | "floor" | "ceil" | "round" | "ln" | "log"
+        // collections
+        | "len" | "range" | "push"
+        // aggregates
+        | "sum" | "avg" | "min" | "max" | "count" | "std_devp" | "std_devs"
+        // constants
+        | "pi"
+    )
+}
+
+fn is_cordial_type_annotation(w: &str) -> bool {
+    matches!(w, "int" | "float" | "bool" | "str" | "number" | "array" | "vec")
+}
+
+/// Did the scanner just emit a `:` span? Used so a type name following a
+/// `:` picks up the type-annotation color only in the `let x: T = …` shape,
+/// never when it happens to sit elsewhere on the line.
+fn last_token_is_colon(spans: &[(Range<usize>, SyntaxHighlight)]) -> bool {
+    matches!(spans.last(), Some((_, h)) if h.kind == COR_REF_COLON)
+}
+
+fn heading_level(trimmed: &str) -> Option<usize> {
+    let bytes = trimmed.as_bytes();
+    if bytes.is_empty() || bytes[0] != b'#' { return None; }
+    let mut level = 0;
+    while level < bytes.len() && bytes[level] == b'#' { level += 1; }
+    if level > 3 { return None; }
+    if level < bytes.len() && bytes[level] == b' ' {
+        Some(level)
+    } else {
+        None
+    }
+}
+
+fn is_horizontal_rule(trimmed: &str) -> bool {
+    if trimmed.len() < 3 { return false; }
+    let first = trimmed.as_bytes()[0];
+    if !matches!(first, b'-' | b'*' | b'_') { return false; }
+    trimmed.bytes().all(|b| b == first || b == b' ')
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum ListKind {
+    Plain(usize),
+    TaskOpen(usize),
+    TaskDone(usize),
+}
+
+fn list_marker_info(trimmed: &str) -> Option<ListKind> {
+    let bytes = trimmed.as_bytes();
+    if bytes.is_empty() { return None; }
+
+    if matches!(bytes[0], b'-' | b'*' | b'+') && bytes.get(1) == Some(&b' ') {
+        if trimmed.starts_with("- [ ] ") {
+            return Some(ListKind::TaskOpen(6));
+        }
+        if trimmed.starts_with("- [x] ") || trimmed.starts_with("- [X] ") {
+            return Some(ListKind::TaskDone(6));
+        }
+        return Some(ListKind::Plain(2));
+    }
+
+    let mut i = 0;
+    while i < bytes.len() && bytes[i].is_ascii_digit() { i += 1; }
+    if i > 0 && i < bytes.len() && matches!(bytes[i], b'.' | b')') {
+        if bytes.get(i + 1) == Some(&b' ') {
+            return Some(ListKind::Plain(i + 2));
+        }
+    }
+    None
+}
+
+fn parse_inline(text: &str, base: usize) -> Vec<(Range<usize>, SyntaxHighlight)> {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut spans = Vec::new();
+    let mut i = 0;
+
+    while i < len {
+        if bytes[i] == b'\\' && i + 1 < len && is_md_punctuation(bytes[i + 1]) {
+            i += 2;
+            continue;
+        }
+
+        // cosmic-text's partial reshape (called by iced's text_editor after
+        // add_span) drops the new run's attrs on the FIRST glyph of the new
+        // attribute run, so `*hello*` would render with "h" plain and "ello"
+        // italic. Workaround: emit the bold/italic span covering the opening
+        // marker bytes too — the marker becomes the "lost first glyph" and
+        // the first letter of the inner text gets the style. The marker span
+        // pushed first is overridden by the bold/italic span that follows
+        // because cosmic-text uses the LAST add_span to win on overlap.
+        // Markers (`*`, `**`, `***`) end up italic/bold themselves, which is
+        // imperceptible at typical font sizes.
+
+        if i + 2 < len && bytes[i] == b'*' && bytes[i + 1] == b'*' && bytes[i + 2] == b'*' {
+            if let Some(end) = find_triple_star(bytes, i + 3) {
+                spans.push((base + i..base + i + 3, SyntaxHighlight { kind: MD_FORMAT_MARKER }));
+                spans.push((base + end..base + end + 3, SyntaxHighlight { kind: MD_FORMAT_MARKER }));
+                if i + 3 < end {
+                    spans.push((base + i..base + end + 3, SyntaxHighlight { kind: MD_BOLD_ITALIC }));
+                }
+                i = end + 3;
+                continue;
+            }
+        }
+
+        if i + 1 < len && bytes[i] == b'*' && bytes[i + 1] == b'*' {
+            if let Some(end) = find_closing(bytes, i + 2, b'*', b'*') {
+                spans.push((base + i..base + i + 2, SyntaxHighlight { kind: MD_FORMAT_MARKER }));
+                spans.push((base + end..base + end + 2, SyntaxHighlight { kind: MD_FORMAT_MARKER }));
+                if i + 2 < end {
+                    let inner = parse_inline(&text[i + 2..end], base + i + 2);
+                    if inner.is_empty() {
+                        spans.push((base + i..base + end + 2, SyntaxHighlight { kind: MD_BOLD }));
+                    } else {
+                        spans.push((base + i..base + i + 2, SyntaxHighlight { kind: MD_BOLD }));
+                        for (r, h) in inner {
+                            let kind = if h.kind == MD_ITALIC { MD_BOLD_ITALIC } else { h.kind };
+                            spans.push((r, SyntaxHighlight { kind }));
+                        }
+                        // Extend bold over closing marker for visual consistency.
+                        spans.push((base + end..base + end + 2, SyntaxHighlight { kind: MD_BOLD }));
+                    }
+                }
+                i = end + 2;
+                continue;
+            }
+        }
+
+        if bytes[i] == b'*' && (i + 1 >= len || bytes[i + 1] != b'*') {
+            if let Some(end) = find_single_closing(bytes, i + 1, b'*') {
+                if end > i + 1 && bytes[end - 1] != b'*' {
+                    spans.push((base + i..base + i + 1, SyntaxHighlight { kind: MD_FORMAT_MARKER }));
+                    spans.push((base + end..base + end + 1, SyntaxHighlight { kind: MD_FORMAT_MARKER }));
+                    if i + 1 < end {
+                        spans.push((base + i..base + end + 1, SyntaxHighlight { kind: MD_ITALIC }));
+                    }
+                    i = end + 1;
+                    continue;
+                }
+            }
+        }
+
+        if bytes[i] == b'`' {
+            let tick_count = count_backticks(bytes, i);
+            if let Some(end) = find_backtick_close(bytes, i + tick_count, tick_count) {
+                spans.push((base + i..base + i + tick_count, SyntaxHighlight { kind: MD_FORMAT_MARKER }));
+                if i + tick_count < end {
+                    spans.push((base + i + tick_count..base + end, SyntaxHighlight { kind: MD_INLINE_CODE }));
+                }
+                spans.push((base + end..base + end + tick_count, SyntaxHighlight { kind: MD_FORMAT_MARKER }));
+                i = end + tick_count;
+                continue;
+            }
+        }
+
+        if bytes[i] == b'[' {
+            if let Some((text_end, url_end)) = find_link(bytes, i) {
+                spans.push((base + i..base + i + 1, SyntaxHighlight { kind: MD_FORMAT_MARKER }));
+                if i + 1 < text_end {
+                    spans.push((base + i + 1..base + text_end, SyntaxHighlight { kind: MD_LINK_TEXT }));
+                }
+                spans.push((base + text_end..base + text_end + 2, SyntaxHighlight { kind: MD_FORMAT_MARKER }));
+                if text_end + 2 < url_end {
+                    spans.push((base + text_end + 2..base + url_end, SyntaxHighlight { kind: MD_LINK_URL }));
+                }
+                spans.push((base + url_end..base + url_end + 1, SyntaxHighlight { kind: MD_FORMAT_MARKER }));
+                i = url_end + 1;
+                continue;
+            }
+        }
+
+        i += 1;
+    }
+
+    spans
+}
+
+fn is_md_punctuation(b: u8) -> bool {
+    matches!(b, b'\\' | b'`' | b'*' | b'_' | b'{' | b'}' | b'[' | b']'
+        | b'(' | b')' | b'#' | b'+' | b'-' | b'.' | b'!' | b'|')
+}
+
+fn find_triple_star(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut i = start;
+    while i + 2 < bytes.len() {
+        if bytes[i] == b'*' && bytes[i + 1] == b'*' && bytes[i + 2] == b'*' {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+fn count_backticks(bytes: &[u8], start: usize) -> usize {
+    let mut n = 0;
+    while start + n < bytes.len() && bytes[start + n] == b'`' { n += 1; }
+    n
+}
+
+fn find_backtick_close(bytes: &[u8], start: usize, count: usize) -> Option<usize> {
+    if count == 0 { return None; }
+    let mut i = start;
+    while i + count <= bytes.len() {
+        if count_backticks(bytes, i) == count {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+fn find_closing(bytes: &[u8], start: usize, c1: u8, c2: u8) -> Option<usize> {
+    let mut i = start;
+    while i + 1 < bytes.len() {
+        if bytes[i] == c1 && bytes[i + 1] == c2 {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+fn find_single_closing(bytes: &[u8], start: usize, ch: u8) -> Option<usize> {
+    let mut i = start;
+    while i < bytes.len() {
+        if bytes[i] == ch {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+fn find_link(bytes: &[u8], open: usize) -> Option<(usize, usize)> {
+    let mut i = open + 1;
+    while i < bytes.len() {
+        if bytes[i] == b']' {
+            if i + 1 < bytes.len() && bytes[i + 1] == b'(' {
+                let text_end = i;
+                let mut j = i + 2;
+                while j < bytes.len() {
+                    if bytes[j] == b')' {
+                        return Some((text_end, j));
+                    }
+                    j += 1;
+                }
+            }
+            return None;
+        }
+        if bytes[i] == b'\n' { return None; }
+        i += 1;
+    }
+    None
+}
+
+impl highlighter::Highlighter for SyntaxHighlighter {
+    type Settings = SyntaxSettings;
+    type Highlight = SyntaxHighlight;
+    type Iterator<'a> = std::vec::IntoIter<(Range<usize>, SyntaxHighlight)>;
+
+    fn new(settings: &Self::Settings) -> Self {
+        let mut h = SyntaxHighlighter {
+            lang: settings.lang.clone(),
+            spans: Vec::new(),
+            line_offsets: Vec::new(),
+            line_kinds: Vec::new(),
+            in_fenced_code: false,
+            current_line: 0,
+            line_decors: Vec::new(),
+        };
+        h.rebuild(&settings.source);
+        h
+    }
+
+    fn update(&mut self, new_settings: &Self::Settings) {
+        self.lang = new_settings.lang.clone();
+        self.rebuild(&new_settings.source);
+    }
+
+    fn change_line(&mut self, line: usize) {
+        self.current_line = self.current_line.min(line);
+        if line == 0 {
+            self.in_fenced_code = false;
+        }
+    }
+
+    fn highlight_line(&mut self, line: &str) -> Self::Iterator<'_> {
+        let ln = self.current_line;
+        self.current_line += 1;
+
+        let trimmed = line.trim_start();
+        if trimmed.starts_with(RESULT_PREFIX) {
+            return vec![(0..line.len(), SyntaxHighlight { kind: EVAL_RESULT_KIND })].into_iter();
+        }
+        if trimmed.starts_with(ERROR_PREFIX) {
+            return vec![(0..line.len(), SyntaxHighlight { kind: EVAL_ERROR_KIND })].into_iter();
+        }
+
+        let is_markdown = ln < self.line_kinds.len()
+            && self.line_kinds[ln] == LineKind::Markdown;
+
+        if is_markdown {
+            if trimmed.starts_with("```") {
+                self.in_fenced_code = !self.in_fenced_code;
+                return vec![(0..line.len(), SyntaxHighlight { kind: MD_FENCE_MARKER })].into_iter();
+            }
+
+            if self.in_fenced_code {
+                return vec![(0..line.len(), SyntaxHighlight { kind: MD_CODE_BLOCK })].into_iter();
+            }
+
+            // Markdown lines always return md_spans, even when empty —
+            // falling through to the code path would let plain prose pick up
+            // Rust keyword highlighting on words like "let", "type", "return".
+            return self.highlight_markdown(line).into_iter();
+        } else if self.in_fenced_code {
+            self.in_fenced_code = false;
+        }
+
+        // Non-markdown lines are Cordial / Eval / Comment — hand-rolled
+        // Cordial scanner, not the generic tree-sitter path (which uses
+        // the configured `lang`, wrong for Cordial). Each token gets its
+        // own color: `/=`, `@`, `::`, table / block names, cell addresses,
+        // keywords, builtins, numbers, strings, comments.
+        if ln < self.line_kinds.len()
+            && matches!(self.line_kinds[ln], LineKind::Cordial | LineKind::Eval | LineKind::Comment)
+        {
+            return highlight_cordial(line).into_iter();
+        }
+
+        if ln >= self.line_offsets.len() {
+            return Vec::new().into_iter();
+        }
+
+        let line_start = self.line_offsets[ln];
+        let line_end = if ln + 1 < self.line_offsets.len() {
+            self.line_offsets[ln + 1] - 1
+        } else {
+            line_start + line.len()
+        };
+
+        let mut result = Vec::new();
+        for span in &self.spans {
+            if span.end <= line_start || span.start >= line_end {
+                continue;
+            }
+            let start = span.start.max(line_start) - line_start;
+            let end = span.end.min(line_end) - line_start;
+            if start < end {
+                result.push((start..end, SyntaxHighlight { kind: span.kind }));
+            }
+        }
+        result.into_iter()
+    }
+
+    fn current_line(&self) -> usize {
+        self.current_line
+    }
+}
+
+pub fn highlight_color(kind: u8) -> Color {
+    let p = palette::current();
+    match kind {
+        0  => p.mauve,
+        1  => p.blue,
+        2  => p.teal,
+        3  => p.yellow,
+        4  => p.yellow,
+        5  => p.teal,
+        6  => p.peach,
+        7  => p.peach,
+        8  => p.green,
+        9  => p.peach,
+        10 => p.overlay0,
+        11 => p.text,
+        12 => p.red,
+        13 => p.flamingo,
+        14 => p.sky,
+        15 => p.overlay2,
+        16 => p.overlay2,
+        17 => p.overlay2,
+        18 => p.blue,
+        19 => p.mauve,
+        20 => p.yellow,
+        21 => p.teal,
+        22 => p.red,
+        23 => p.text,
+        24 => p.green,
+        25 => p.maroon,
+        COR_EVAL_SIGIL => p.teal,
+        COR_AT_SIGIL => p.mauve,
+        COR_COLON_COLON => p.flamingo,
+        COR_REF_COLON => p.flamingo,
+        COR_TABLE_NAME => p.blue,
+        COR_BLOCK_NAME => p.lavender,
+        COR_CELL_ADDR => p.yellow,
+        COR_KEYWORD => p.mauve,
+        COR_BUILTIN_FN => p.sky,
+        COR_NUMBER => p.peach,
+        COR_STRING => p.green,
+        COR_COMMENT => p.overlay1,
+        COR_OPERATOR => p.overlay2,
+        COR_BRACKET => p.overlay2,
+        COR_TYPE_ANN => p.yellow,
+        MD_HEADING_MARKER => p.overlay0,
+        MD_H1 => p.rosewater,
+        MD_H2 => p.peach,
+        MD_H3 => p.yellow,
+        MD_BOLD => p.text,
+        MD_ITALIC => p.text,
+        MD_INLINE_CODE => p.green,
+        MD_FORMAT_MARKER => p.overlay0,
+        MD_LINK_TEXT => p.blue,
+        MD_LINK_URL => p.overlay1,
+        MD_BLOCKQUOTE_MARKER => p.overlay0,
+        MD_BLOCKQUOTE => p.sky,
+        MD_LIST_MARKER => p.sky,
+        MD_FENCE_MARKER => p.overlay0,
+        MD_CODE_BLOCK => p.text,
+        MD_HR => p.overlay1,
+        MD_TASK_OPEN => p.overlay2,
+        MD_TASK_DONE => p.green,
+        MD_BOLD_ITALIC => p.text,
+        _  => p.text,
+    }
+}
+
+pub fn highlight_font(kind: u8) -> Option<Font> {
+    // Spans inherit the named family from EDITOR_FONT so fontdb can pick up
+    // the real Bold, Italic and BoldItalic faces of the system monospace.
+    match kind {
+        MD_HEADING_MARKER => Some(Font { weight: Weight::Bold, ..EDITOR_FONT }),
+        MD_H1 => Some(Font { weight: Weight::Black, ..EDITOR_FONT }),
+        MD_H2 => Some(Font { weight: Weight::Bold, ..EDITOR_FONT }),
+        MD_H3 => Some(Font { weight: Weight::Semibold, ..EDITOR_FONT }),
+        MD_BOLD => Some(Font { weight: Weight::Bold, ..EDITOR_FONT }),
+        MD_ITALIC => Some(Font { style: FontStyle::Italic, ..EDITOR_FONT }),
+        MD_BOLD_ITALIC => Some(Font { weight: Weight::Bold, style: FontStyle::Italic, ..EDITOR_FONT }),
+        MD_INLINE_CODE => Some(EDITOR_FONT),
+        MD_FORMAT_MARKER => Some(EDITOR_FONT),
+        MD_BLOCKQUOTE => Some(Font { style: FontStyle::Italic, ..EDITOR_FONT }),
+        MD_FENCE_MARKER => Some(EDITOR_FONT),
+        MD_CODE_BLOCK => Some(EDITOR_FONT),
+        MD_TASK_DONE => Some(Font { weight: Weight::Bold, ..EDITOR_FONT }),
+        _ => None,
+    }
+}
+
+pub fn compute_line_decors(source: &str) -> Vec<LineDecor> {
+    let classified = classify_document(source);
+    let line_kinds: Vec<LineKind> = classified.into_iter().map(|cl| cl.kind).collect();
+    let mut decors = Vec::new();
+    let mut in_fence = false;
+    for (i, raw_line) in source.split('\n').enumerate() {
+        let is_md = i < line_kinds.len() && line_kinds[i] == LineKind::Markdown;
+        if is_md {
+            let trimmed = raw_line.trim_start();
+            if trimmed.starts_with("```") {
+                in_fence = !in_fence;
+                decors.push(LineDecor::FenceMarker);
+            } else if in_fence {
+                decors.push(LineDecor::CodeBlock);
+            } else if is_horizontal_rule(trimmed) {
+                decors.push(LineDecor::HorizontalRule);
+            } else if trimmed.starts_with("> ") || trimmed == ">" {
+                decors.push(LineDecor::Blockquote);
+            } else {
+                decors.push(LineDecor::None);
+            }
+        } else {
+            if in_fence { in_fence = false; }
+            decors.push(LineDecor::None);
+        }
+    }
+    decors
+}
