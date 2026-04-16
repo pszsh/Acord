@@ -60,6 +60,35 @@ struct Theme {
         rosewater: NSColor(red: 0.961, green: 0.761, blue: 0.765, alpha: 1)
     )
 
+    static let kicad = CatppuccinPalette(
+        base:      NSColor(red: 0.090, green: 0.094, blue: 0.114, alpha: 1),
+        mantle:    NSColor(red: 0.075, green: 0.078, blue: 0.102, alpha: 1),
+        crust:     NSColor(red: 0.059, green: 0.059, blue: 0.059, alpha: 1),
+        surface0:  NSColor(red: 0.102, green: 0.110, blue: 0.125, alpha: 1),
+        surface1:  NSColor(red: 0.122, green: 0.126, blue: 0.141, alpha: 1),
+        surface2:  NSColor(red: 0.133, green: 0.141, blue: 0.149, alpha: 1),
+        overlay0:  NSColor(red: 0.361, green: 0.368, blue: 0.418, alpha: 1),
+        overlay1:  NSColor(red: 0.449, green: 0.453, blue: 0.499, alpha: 1),
+        overlay2:  NSColor(red: 0.548, green: 0.545, blue: 0.598, alpha: 1),
+        text:      NSColor(red: 0.965, green: 0.954, blue: 0.969, alpha: 1),
+        subtext0:  NSColor(red: 0.679, green: 0.668, blue: 0.725, alpha: 1),
+        subtext1:  NSColor(red: 0.824, green: 0.813, blue: 0.852, alpha: 1),
+        red:       NSColor(red: 0.914, green: 0.376, blue: 0.376, alpha: 1),
+        maroon:    NSColor(red: 0.949, green: 0.416, blue: 0.584, alpha: 1),
+        peach:     NSColor(red: 0.965, green: 0.533, blue: 0.404, alpha: 1),
+        yellow:    NSColor(red: 0.988, green: 0.831, blue: 0.349, alpha: 1),
+        green:     NSColor(red: 0.403, green: 0.972, blue: 0.534, alpha: 1),
+        teal:      NSColor(red: 0.310, green: 1.000, blue: 0.882, alpha: 1),
+        sky:       NSColor(red: 0.403, green: 0.813, blue: 0.972, alpha: 1),
+        sapphire:  NSColor(red: 0.384, green: 0.635, blue: 0.949, alpha: 1),
+        blue:      NSColor(red: 0.337, green: 0.475, blue: 0.988, alpha: 1),
+        lavender:  NSColor(red: 1.000, green: 0.718, blue: 0.937, alpha: 1),
+        mauve:     NSColor(red: 0.635, green: 0.282, blue: 0.980, alpha: 1),
+        pink:      NSColor(red: 0.973, green: 0.345, blue: 0.718, alpha: 1),
+        flamingo:  NSColor(red: 0.965, green: 0.533, blue: 0.404, alpha: 1),
+        rosewater: NSColor(red: 0.984, green: 0.639, blue: 0.757, alpha: 1)
+    )
+
     static let latte = CatppuccinPalette(
         base:      NSColor(red: 0.937, green: 0.929, blue: 0.961, alpha: 1),
         mantle:    NSColor(red: 0.906, green: 0.898, blue: 0.941, alpha: 1),
@@ -92,12 +121,12 @@ struct Theme {
     static var current: CatppuccinPalette {
         let mode = ConfigManager.shared.themeMode
         switch mode {
-        case "dark": return mocha
+        case "dark": return kicad
         case "light": return latte
         default:
             let appearance = NSApp.effectiveAppearance
             let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            return isDark ? mocha : latte
+            return isDark ? kicad : latte
         }
     }
 

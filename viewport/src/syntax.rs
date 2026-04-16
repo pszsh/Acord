@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ops::Range;
 
 use iced_wgpu::core::text::highlighter;
@@ -31,6 +32,15 @@ const COR_COMMENT: u8 = 61;
 const COR_OPERATOR: u8 = 62;
 const COR_BRACKET: u8 = 63;
 const COR_TYPE_ANN: u8 = 64;
+
+// Per-identifier rainbow. Each user-introduced name (let, fn, params, for var,
+// math-form fn def) gets one of eight palette slots, picked with a stride
+// that avoids adjacent colors landing on consecutive identifiers. Subsequent
+// references resolve to the same slot so the name reads the same color
+// throughout the document.
+const USER_IDENT_BASE: u8 = 70;
+const USER_IDENT_PALETTE_SIZE: u8 = 8;
+const USER_IDENT_HOP: u32 = 3;
 
 const MD_HEADING_MARKER: u8 = 26;
 const MD_H1: u8 = 27;
@@ -92,6 +102,7 @@ pub struct SyntaxHighlighter {
     in_fenced_code: bool,
     current_line: usize,
     line_decors: Vec<LineDecor>,
+    user_idents: HashMap<String, u8>,
 }
 
 impl SyntaxHighlighter {
@@ -132,6 +143,87 @@ impl SyntaxHighlighter {
 
         self.in_fenced_code = false;
         self.current_line = 0;
+
+        self.scan_user_idents(source);
+    }
+
+    /// Walk the source, find every identifier introduction site (let, fn,
+    /// for, math-form fn def, params), and assign each unique name a slot
+    /// in the user-ident rainbow. Subsequent references in `highlight_cordial`
+    /// look the name up here.
+    fn scan_user_idents(&mut self, source: &str) {
+        self.user_idents.clear();
+        let mut next_slot: u32 = 0;
+
+        for line in source.split('\n') {
+            let trimmed = line.trim_start();
+            let bytes = trimmed.as_bytes();
+
+            // `let IDENT...`
+            if let Some(rest) = trimmed.strip_prefix("let ") {
+                let mut i = 0;
+                let rb = rest.as_bytes();
+                while i < rb.len() && rb[i] == b' ' { i += 1; }
+                let name_start = i;
+                while i < rb.len() && (rb[i].is_ascii_alphanumeric() || rb[i] == b'_') { i += 1; }
+                if i > name_start {
+                    assign_user_ident(&mut self.user_idents, &mut next_slot, &rest[name_start..i]);
+                }
+                while i < rb.len() && rb[i] == b' ' { i += 1; }
+                if i < rb.len() && rb[i] == b'(' {
+                    extract_paren_idents(&rest[i + 1..], &mut self.user_idents, &mut next_slot);
+                }
+                continue;
+            }
+
+            // `fn IDENT(...)`
+            if let Some(rest) = trimmed.strip_prefix("fn ") {
+                let mut i = 0;
+                let rb = rest.as_bytes();
+                while i < rb.len() && rb[i] == b' ' { i += 1; }
+                let name_start = i;
+                while i < rb.len() && (rb[i].is_ascii_alphanumeric() || rb[i] == b'_') { i += 1; }
+                if i > name_start {
+                    assign_user_ident(&mut self.user_idents, &mut next_slot, &rest[name_start..i]);
+                }
+                while i < rb.len() && rb[i] == b' ' { i += 1; }
+                if i < rb.len() && rb[i] == b'(' {
+                    extract_paren_idents(&rest[i + 1..], &mut self.user_idents, &mut next_slot);
+                }
+                continue;
+            }
+
+            // `for IDENT in ...`
+            if let Some(rest) = trimmed.strip_prefix("for ") {
+                let rb = rest.as_bytes();
+                let mut i = 0;
+                while i < rb.len() && rb[i] == b' ' { i += 1; }
+                let name_start = i;
+                while i < rb.len() && (rb[i].is_ascii_alphanumeric() || rb[i] == b'_') { i += 1; }
+                if i > name_start {
+                    assign_user_ident(&mut self.user_idents, &mut next_slot, &rest[name_start..i]);
+                }
+                continue;
+            }
+
+            // `IDENT(...) = ...` math-form fn def, OR `IDENT = ...` assignment
+            let mut i = 0;
+            let name_start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') { i += 1; }
+            if i > name_start {
+                let name = &trimmed[name_start..i];
+                let mut j = i;
+                while j < bytes.len() && bytes[j] == b' ' { j += 1; }
+                if j < bytes.len() {
+                    if bytes[j] == b'(' {
+                        assign_user_ident(&mut self.user_idents, &mut next_slot, name);
+                        extract_paren_idents(&trimmed[j + 1..], &mut self.user_idents, &mut next_slot);
+                    } else if bytes[j] == b'=' && (j + 1 >= bytes.len() || bytes[j + 1] != b'=') {
+                        assign_user_ident(&mut self.user_idents, &mut next_slot, name);
+                    }
+                }
+            }
+        }
     }
 
     fn highlight_markdown(&self, line: &str) -> Vec<(Range<usize>, SyntaxHighlight)> {
@@ -204,7 +296,50 @@ impl SyntaxHighlighter {
 /// spans. Idempotent, single-pass; each branch either consumes a whole
 /// token or advances one byte. Unknown bytes get no highlight (they fall
 /// through to the editor's default text color).
-fn highlight_cordial(line: &str) -> Vec<(Range<usize>, SyntaxHighlight)> {
+fn assign_user_ident(map: &mut HashMap<String, u8>, slot: &mut u32, name: &str) {
+    if name.is_empty()
+        || is_cordial_keyword(name)
+        || is_cordial_builtin(name)
+        || is_cordial_type_annotation(name)
+        || name == "pi"
+        || name == "where"
+        || name == "from"
+        || name == "solve"
+        || map.contains_key(name)
+    {
+        return;
+    }
+    let color_idx = ((*slot * USER_IDENT_HOP) % USER_IDENT_PALETTE_SIZE as u32) as u8;
+    map.insert(name.to_string(), color_idx);
+    *slot += 1;
+}
+
+fn extract_paren_idents(s: &str, map: &mut HashMap<String, u8>, slot: &mut u32) {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    let mut depth: i32 = 1;
+    while i < bytes.len() && depth > 0 {
+        match bytes[i] {
+            b'(' => { depth += 1; i += 1; }
+            b')' => { depth -= 1; i += 1; }
+            b':' => {
+                // Skip the type identifier that follows; type names belong
+                // to the type-annotation color, not the user-ident rainbow.
+                i += 1;
+                while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') { i += 1; }
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') { i += 1; }
+            }
+            c if c.is_ascii_alphabetic() || c == b'_' => {
+                let start = i;
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') { i += 1; }
+                assign_user_ident(map, slot, &s[start..i]);
+            }
+            _ => i += 1,
+        }
+    }
+}
+
+fn highlight_cordial(line: &str, user_idents: &HashMap<String, u8>) -> Vec<(Range<usize>, SyntaxHighlight)> {
     let bytes = line.as_bytes();
     let len = bytes.len();
     let mut spans: Vec<(Range<usize>, SyntaxHighlight)> = Vec::new();
@@ -317,9 +452,7 @@ fn highlight_cordial(line: &str) -> Vec<(Range<usize>, SyntaxHighlight)> {
             continue;
         }
 
-        // Identifier → keyword / builtin / plain. Plain idents get no
-        // highlight so user-defined names stay in the default editor
-        // color — keeps the document from looking like confetti.
+        // Identifier → keyword / builtin / type-annotation / user-rainbow.
         if is_ident_byte(c) && !c.is_ascii_digit() {
             let start = i;
             while i < len && is_ident_byte(bytes[i]) { i += 1; }
@@ -329,9 +462,9 @@ fn highlight_cordial(line: &str) -> Vec<(Range<usize>, SyntaxHighlight)> {
             } else if is_cordial_builtin(word) {
                 spans.push((start..i, SyntaxHighlight { kind: COR_BUILTIN_FN }));
             } else if is_cordial_type_annotation(word) && last_token_is_colon(&spans) {
-                // Type annotation immediately after `:` in a `let x: T = …`
-                // reads the type name; give it the yellow/type color.
                 spans.push((start..i, SyntaxHighlight { kind: COR_TYPE_ANN }));
+            } else if let Some(&slot) = user_idents.get(word) {
+                spans.push((start..i, SyntaxHighlight { kind: USER_IDENT_BASE + slot }));
             }
             continue;
         }
@@ -682,6 +815,7 @@ impl highlighter::Highlighter for SyntaxHighlighter {
             in_fenced_code: false,
             current_line: 0,
             line_decors: Vec::new(),
+            user_idents: HashMap::new(),
         };
         h.rebuild(&settings.source);
         h
@@ -740,7 +874,7 @@ impl highlighter::Highlighter for SyntaxHighlighter {
         if ln < self.line_kinds.len()
             && matches!(self.line_kinds[ln], LineKind::Cordial | LineKind::Eval | LineKind::Comment)
         {
-            return highlight_cordial(line).into_iter();
+            return highlight_cordial(line, &self.user_idents).into_iter();
         }
 
         if ln >= self.line_offsets.len() {
@@ -775,6 +909,19 @@ impl highlighter::Highlighter for SyntaxHighlighter {
 
 pub fn highlight_color(kind: u8) -> Color {
     let p = palette::current();
+    if kind >= USER_IDENT_BASE && kind < USER_IDENT_BASE + USER_IDENT_PALETTE_SIZE {
+        return match kind - USER_IDENT_BASE {
+            0 => p.red,
+            1 => p.green,
+            2 => p.peach,
+            3 => p.blue,
+            4 => p.mauve,
+            5 => p.teal,
+            6 => p.yellow,
+            7 => p.pink,
+            _ => p.text,
+        };
+    }
     match kind {
         0  => p.mauve,
         1  => p.blue,

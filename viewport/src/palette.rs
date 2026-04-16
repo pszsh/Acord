@@ -60,6 +60,38 @@ pub static MOCHA: Palette = Palette {
     crust:     Color::from_rgb(0.067, 0.067, 0.106),
 };
 
+/// KiCad-inspired dark — near-black background, saturated accents, high
+/// contrast. The signature KiCad schematic-editor feel: vivid greens,
+/// bright cyans, punchy reds and yellows on a deep navy base.
+pub static KICAD: Palette = Palette {
+    rosewater: Color::from_rgb(0.984, 0.639, 0.757),
+    flamingo:  Color::from_rgb(0.965, 0.533, 0.404),
+    pink:      Color::from_rgb(0.973, 0.345, 0.718),
+    mauve:     Color::from_rgb(0.635, 0.282, 0.980),
+    red:       Color::from_rgb(0.914, 0.376, 0.376),
+    maroon:    Color::from_rgb(0.949, 0.416, 0.584),
+    peach:     Color::from_rgb(0.965, 0.533, 0.404),
+    yellow:    Color::from_rgb(0.988, 0.831, 0.349),
+    green:     Color::from_rgb(0.403, 0.972, 0.534),
+    teal:      Color::from_rgb(0.310, 1.000, 0.882),
+    sky:       Color::from_rgb(0.403, 0.813, 0.972),
+    sapphire:  Color::from_rgb(0.384, 0.635, 0.949),
+    blue:      Color::from_rgb(0.337, 0.475, 0.988),
+    lavender:  Color::from_rgb(1.000, 0.718, 0.937),
+    text:      Color::from_rgb(0.965, 0.954, 0.969),
+    subtext1:  Color::from_rgb(0.824, 0.813, 0.852),
+    subtext0:  Color::from_rgb(0.679, 0.668, 0.725),
+    overlay2:  Color::from_rgb(0.548, 0.545, 0.598),
+    overlay1:  Color::from_rgb(0.449, 0.453, 0.499),
+    overlay0:  Color::from_rgb(0.361, 0.368, 0.418),
+    surface2:  Color::from_rgb(0.133, 0.141, 0.149),
+    surface1:  Color::from_rgb(0.122, 0.126, 0.141),
+    surface0:  Color::from_rgb(0.102, 0.110, 0.125),
+    base:      Color::from_rgb(0.090, 0.094, 0.114),
+    mantle:    Color::from_rgb(0.075, 0.078, 0.102),
+    crust:     Color::from_rgb(0.059, 0.059, 0.059),
+};
+
 pub static LATTE: Palette = Palette {
     rosewater: Color::from_rgb(0.863, 0.541, 0.471),
     flamingo:  Color::from_rgb(0.867, 0.471, 0.471),
@@ -105,7 +137,8 @@ pub fn is_dark() -> bool {
 pub fn set_theme(name: &str) {
     let (pal, dark) = match name {
         "latte" | "light" => (&LATTE, false),
-        _ => (&MOCHA, true),
+        "kicad" => (&KICAD, true),
+        _ => (&KICAD, true),
     };
     CURRENT.with(|c| *c.borrow_mut() = pal);
     IS_DARK.with(|d| *d.borrow_mut() = dark);

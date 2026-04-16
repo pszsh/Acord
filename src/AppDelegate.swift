@@ -589,12 +589,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let mode = ConfigManager.shared.themeMode
         let name: String
         switch mode {
-        case "dark": name = "mocha"
+        case "dark": name = "kicad"
         case "light": name = "latte"
         default:
             let appearance = NSApp.effectiveAppearance
             let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            name = isDark ? "mocha" : "latte"
+            name = isDark ? "kicad" : "latte"
         }
         viewport?.setTheme(name)
     }
