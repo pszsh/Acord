@@ -32,6 +32,7 @@ enum LineIndicatorMode: String, CaseIterable {
 struct SettingsView: View {
     @State private var themeMode: String = ConfigManager.shared.themeMode
     @State private var lineIndicatorMode: String = ConfigManager.shared.lineIndicatorMode
+    @State private var gutterRainbow: Bool = ConfigManager.shared.gutterRainbow
     @State private var autoSaveDir: String = ConfigManager.shared.autoSaveDirectory
 
     var body: some View {
@@ -53,6 +54,7 @@ struct SettingsView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                Toggle("Gutter rainbow", isOn: $gutterRainbow)
             }
 
             Section("Auto-Save") {
@@ -72,7 +74,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 400, height: 260)
+        .frame(width: 400, height: 300)
         .background(Color(ns: palette.base))
         .onChange(of: themeMode) {
             ConfigManager.shared.themeMode = themeMode
@@ -81,6 +83,10 @@ struct SettingsView: View {
         }
         .onChange(of: lineIndicatorMode) {
             ConfigManager.shared.lineIndicatorMode = lineIndicatorMode
+            NotificationCenter.default.post(name: .settingsChanged, object: nil)
+        }
+        .onChange(of: gutterRainbow) {
+            ConfigManager.shared.gutterRainbow = gutterRainbow
             NotificationCenter.default.post(name: .settingsChanged, object: nil)
         }
         .onChange(of: autoSaveDir) {

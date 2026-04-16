@@ -2,6 +2,7 @@ use iced_wgpu::core::{mouse, Element, Length, Point, Rectangle, Theme};
 use iced_widget::canvas;
 
 use crate::block::{Block, BlockCommand, LayeredView, ViewCtx};
+use crate::oklab;
 use crate::palette;
 use crate::selection::{BlockId, InnerPath};
 
@@ -26,11 +27,12 @@ impl<Message: Clone> canvas::Program<Message, Theme, iced_wgpu::Renderer> for HR
             Point::new(margin, y),
             Point::new(bounds.width - margin, y),
         );
+        let stroke_w = 1.0;
         frame.stroke(
             &path,
             canvas::Stroke::default()
-                .with_width(1.0)
-                .with_color(p.overlay0),
+                .with_width(stroke_w)
+                .with_color(oklab::lighten_for_size(p.overlay0, stroke_w)),
         );
         vec![frame.into_geometry()]
     }

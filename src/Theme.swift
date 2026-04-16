@@ -73,20 +73,20 @@ struct Theme {
         text:      NSColor(red: 0.965, green: 0.954, blue: 0.969, alpha: 1),
         subtext0:  NSColor(red: 0.679, green: 0.668, blue: 0.725, alpha: 1),
         subtext1:  NSColor(red: 0.824, green: 0.813, blue: 0.852, alpha: 1),
-        red:       NSColor(red: 0.914, green: 0.376, blue: 0.376, alpha: 1),
-        maroon:    NSColor(red: 0.949, green: 0.416, blue: 0.584, alpha: 1),
-        peach:     NSColor(red: 0.965, green: 0.533, blue: 0.404, alpha: 1),
-        yellow:    NSColor(red: 0.988, green: 0.831, blue: 0.349, alpha: 1),
-        green:     NSColor(red: 0.403, green: 0.972, blue: 0.534, alpha: 1),
+        red:       NSColor(red: 0.973, green: 0.545, blue: 0.545, alpha: 1),
+        maroon:    NSColor(red: 0.933, green: 0.506, blue: 0.639, alpha: 1),
+        peach:     NSColor(red: 1.000, green: 0.667, blue: 0.396, alpha: 1),
+        yellow:    NSColor(red: 1.000, green: 0.886, blue: 0.486, alpha: 1),
+        green:     NSColor(red: 0.592, green: 0.925, blue: 0.671, alpha: 1),
         teal:      NSColor(red: 0.310, green: 1.000, blue: 0.882, alpha: 1),
-        sky:       NSColor(red: 0.403, green: 0.813, blue: 0.972, alpha: 1),
+        sky:       NSColor(red: 0.404, green: 0.812, blue: 0.973, alpha: 1),
         sapphire:  NSColor(red: 0.384, green: 0.635, blue: 0.949, alpha: 1),
-        blue:      NSColor(red: 0.337, green: 0.475, blue: 0.988, alpha: 1),
-        lavender:  NSColor(red: 1.000, green: 0.718, blue: 0.937, alpha: 1),
-        mauve:     NSColor(red: 0.635, green: 0.282, blue: 0.980, alpha: 1),
-        pink:      NSColor(red: 0.973, green: 0.345, blue: 0.718, alpha: 1),
-        flamingo:  NSColor(red: 0.965, green: 0.533, blue: 0.404, alpha: 1),
-        rosewater: NSColor(red: 0.984, green: 0.639, blue: 0.757, alpha: 1)
+        blue:      NSColor(red: 0.310, green: 0.643, blue: 0.992, alpha: 1),
+        lavender:  NSColor(red: 0.957, green: 0.737, blue: 0.373, alpha: 1),
+        mauve:     NSColor(red: 0.741, green: 0.494, blue: 0.984, alpha: 1),
+        pink:      NSColor(red: 0.988, green: 0.545, blue: 0.808, alpha: 1),
+        flamingo:  NSColor(red: 1.000, green: 0.718, blue: 0.937, alpha: 1),
+        rosewater: NSColor(red: 0.976, green: 0.639, blue: 0.984, alpha: 1)
     )
 
     static let latte = CatppuccinPalette(

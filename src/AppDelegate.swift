@@ -67,6 +67,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
         observeDocumentText()
         syncThemeToViewport()
+        syncGutterPrefsToViewport()
         startAutosaveTimer()
 
         DocumentBrowserController.shared = DocumentBrowserController(appState: appState)
@@ -582,6 +583,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     @objc private func settingsDidChange() {
         window.backgroundColor = Theme.current.base
         syncThemeToViewport()
+        syncGutterPrefsToViewport()
         window.contentView?.needsDisplay = true
     }
 
@@ -597,6 +599,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             name = isDark ? "kicad" : "latte"
         }
         viewport?.setTheme(name)
+    }
+
+    private func syncGutterPrefsToViewport() {
+        viewport?.setLineIndicator(ConfigManager.shared.lineIndicatorMode)
+        viewport?.setGutterRainbow(ConfigManager.shared.gutterRainbow)
     }
 
     @objc private func toggleBrowser() {

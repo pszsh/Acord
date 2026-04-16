@@ -12,6 +12,7 @@ use iced_wgpu::core::{
 use iced_widget::canvas;
 use iced_widget::container;
 use iced_widget::markdown;
+use iced_widget::MouseArea;
 use crate::text_widget::{self, Action, AnchoredItem, Binding, Cursor, KeyPress, Motion, Position, Status};
 use iced_widget::text_input;
 use iced_wgpu::core::text::highlighter::Format;
@@ -21,6 +22,7 @@ use crate::block::{Block as BlockTrait, ViewCtx};
 use crate::blocks::{self, BoxedBlock};
 use crate::heading_block::HeadingBlock;
 use crate::hr_block::HrBlock;
+use crate::oklab;
 use crate::palette;
 use crate::sidecar::{self, Sidecar, TableSidecar};
 use crate::syntax::{self, SyntaxHighlighter, SyntaxSettings, LineDecor, compute_line_decors};
@@ -36,6 +38,29 @@ pub enum RenderMode {
     Editor,
     /// Read-only rendered view. Press `i` for Editor, `/` for Live.
     View,
+}
+
+/// User-facing line-number gutter / cursorline behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineIndicator {
+    /// Absolute line numbers, full-row cursorline band.
+    On,
+    /// Hidden — no line numbers, no cursorline band. The gutter strip
+    /// stays at its layout width so the editor doesn't reflow.
+    Off,
+    /// Vim-style: relative line numbers (cursor line shows its absolute
+    /// number, others show signed distance), cursorline band on.
+    Vim,
+}
+
+impl LineIndicator {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "off" => LineIndicator::Off,
+            "vim" => LineIndicator::Vim,
+            _ => LineIndicator::On,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -117,9 +142,44 @@ pub enum Message {
     IndentTab,
     OutdentTab,
     SetRenderMode(RenderMode),
+    /// Mouse pressed on an inline `/=` result. Starts the long-press timer.
+    InlineResultPress { block_id: crate::selection::BlockId, after_line: usize },
+    /// Mouse released anywhere after pressing on an inline result. Cancels
+    /// any pending long-press that hasn't fired yet.
+    InlineResultRelease,
+    /// Double-clicked an inline `/=` result. Copies the source line + result
+    /// to clipboard AND drops a `let  = result` template two lines down.
+    InlineResultDoubleClick { block_id: crate::selection::BlockId, after_line: usize },
 }
 
 pub const RESULT_PREFIX: &str = "→ ";
+
+/// Long-press / double-click state for the click-and-hold-on-result gesture.
+#[derive(Debug, Clone)]
+pub struct InlinePressState {
+    pub block_id: crate::selection::BlockId,
+    pub after_line: usize,
+    pub started_at: Instant,
+    pub fired_long_press: bool,
+}
+
+const LONG_PRESS_MS: u128 = 300;
+
+/// Write `s` to the macOS system clipboard via `pbcopy`. Mirrors the
+/// implementation in `handle.rs::MacClipboard::write` so the editor can copy
+/// without threading a clipboard handle through update().
+fn pbcopy(s: &str) {
+    use std::io::Write;
+    if let Ok(mut child) = std::process::Command::new("pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        if let Some(stdin) = child.stdin.as_mut() {
+            let _ = stdin.write_all(s.as_bytes());
+        }
+        let _ = child.wait();
+    }
+}
 pub const ERROR_PREFIX: &str = "⚠ ";
 
 const EVAL_DEBOUNCE_MS: u128 = 300;
@@ -319,6 +379,19 @@ pub struct EditorState {
     /// Cells whose raw text starts with `/=` and are not being edited render
     /// the computed value instead; anything not in this map renders raw.
     pub computed_cells: HashMap<(crate::selection::BlockId, u32, u32), acord_core::interp::Value>,
+
+    /// Active long-press / pending-result-gesture state. Set by
+    /// `InlineResultPress`, cleared by `InlineResultRelease` /
+    /// `InlineResultDoubleClick`. `tick()` checks the elapsed time to fire
+    /// the copy when it crosses `LONG_PRESS_MS`.
+    pub inline_press: Option<InlinePressState>,
+
+    /// Line-indicator preference: controls cursorline band + relative-vs-
+    /// absolute line numbers. Pushed in from Swift via FFI.
+    pub line_indicator: LineIndicator,
+    /// Whether the gutter line numbers cycle through the rainbow palette
+    /// based on distance from the cursor. Independent of `line_indicator`.
+    pub gutter_rainbow: bool,
 }
 
 /// Per-eval table name→id bookkeeping. `keys` is every alias a table is
@@ -428,6 +501,9 @@ impl EditorState {
             computed_tables: Vec::new(),
             computed_trees: Vec::new(),
             computed_cells: HashMap::new(),
+            inline_press: None,
+            line_indicator: LineIndicator::On,
+            gutter_rainbow: true,
         }
     }
 
@@ -1321,6 +1397,20 @@ impl EditorState {
             self.eval_dirty = false;
             self.run_eval();
         }
+        // Fire the long-press copy at the threshold — if the user is still
+        // holding past LONG_PRESS_MS without having released, double-clicked,
+        // or moved off, drop the result onto the clipboard.
+        let due = self.inline_press.as_ref().is_some_and(|s| {
+            !s.fired_long_press && s.started_at.elapsed().as_millis() >= LONG_PRESS_MS
+        });
+        if due {
+            if let Some(s) = self.inline_press.as_mut() {
+                s.fired_long_press = true;
+                let bid = s.block_id;
+                let line = s.after_line;
+                self.copy_inline_result(bid, line);
+            }
+        }
     }
 
     /// True if an eval debounce is still pending. Used by handle::render to keep
@@ -1328,6 +1418,7 @@ impl EditorState {
     /// is arriving, so tick() eventually fires run_eval.
     pub fn has_pending_eval(&self) -> bool {
         self.eval_dirty
+            || self.inline_press.as_ref().is_some_and(|s| !s.fired_long_press)
     }
 
     fn reparse(&mut self) {
@@ -2918,7 +3009,98 @@ impl EditorState {
                     self.set_focused_block(idx);
                 }
             }
+            Message::InlineResultPress { block_id, after_line } => {
+                self.inline_press = Some(InlinePressState {
+                    block_id,
+                    after_line,
+                    started_at: Instant::now(),
+                    fired_long_press: false,
+                });
+            }
+            Message::InlineResultRelease => {
+                self.inline_press = None;
+            }
+            Message::InlineResultDoubleClick { block_id, after_line } => {
+                self.inline_press = None;
+                self.handle_result_extract(block_id, after_line);
+            }
         }
+    }
+
+    /// Look up the inline result for `(block_id, after_line)` and return its
+    /// raw value text (the part after the `→ ` prefix). `None` if no result
+    /// is attached or the result is an error.
+    fn inline_result_value(&self, block_id: crate::selection::BlockId, after_line: usize) -> Option<String> {
+        let r = self.eval_results.iter().find(|r| {
+            r.anchor.block_id == block_id && r.anchor.after_line == after_line && !r.is_error
+        })?;
+        Some(r.text.trim_start_matches(RESULT_PREFIX).trim().to_string())
+    }
+
+    /// Read line `line_idx` from the TextBlock with the given id, if any.
+    fn read_line_at(&self, block_id: crate::selection::BlockId, line_idx: usize) -> Option<String> {
+        let block = self.registry.get(&block_id)?;
+        let tb = block.as_any().downcast_ref::<TextBlock>()?;
+        tb.content.line(line_idx).map(|l| l.text.to_string())
+    }
+
+    /// Copy `{line}  → {value}` to clipboard. Used by both long-press (just
+    /// copy) and double-click (copy then insert template).
+    fn copy_inline_result(&self, block_id: crate::selection::BlockId, after_line: usize) {
+        let value = match self.inline_result_value(block_id, after_line) {
+            Some(v) => v,
+            None => return,
+        };
+        let line = self.read_line_at(block_id, after_line).unwrap_or_default();
+        let trimmed = line.trim_end();
+        let clip = format!("{trimmed}  {RESULT_PREFIX}{value}");
+        pbcopy(&clip);
+    }
+
+    /// Double-click on a result: copy + drop a `let  = value` line two lines
+    /// below the source `/=`. Cursor lands right after `let ` so the user can
+    /// type the variable name.
+    fn handle_result_extract(&mut self, block_id: crate::selection::BlockId, after_line: usize) {
+        let value = match self.inline_result_value(block_id, after_line) {
+            Some(v) => v,
+            None => return,
+        };
+        self.copy_inline_result(block_id, after_line);
+
+        let block_idx = match self.layout.iter().position(|id| *id == block_id) {
+            Some(i) => i,
+            None => return,
+        };
+        // Only TextBlocks accept text-buffer mutations through this path.
+        if self.text_block_at(block_idx).is_none() { return; }
+
+        self.push_undo_snapshot();
+        self.redo_stack.clear();
+        self.set_focused_block(block_idx);
+
+        // Move cursor to end of the source `/=` line.
+        let content = self.content_mut();
+        content.perform(Action::Move(Motion::DocumentStart));
+        for _ in 0..after_line {
+            content.perform(Action::Move(Motion::Down));
+        }
+        content.perform(Action::Move(Motion::End));
+
+        // Drop a blank line then `let  = value`. Two spaces between `let` and
+        // `=` — the user types the variable name into the gap.
+        let paste = format!("\n\nlet  = {value}");
+        content.perform(Action::Edit(text_widget::Edit::Paste(Arc::new(paste))));
+
+        // Cursor is at the end of `value`. Walk back past `value`, the `=`,
+        // and the two flanking spaces — landing right after `let `.
+        let back = 3 + value.chars().count();
+        for _ in 0..back {
+            content.perform(Action::Move(Motion::Left));
+        }
+
+        self.last_edit = Instant::now();
+        self.eval_dirty = true;
+        self.reparse();
     }
 
     pub fn view(&self) -> Element<'_, Message, Theme, iced_wgpu::Renderer> {
@@ -2966,7 +3148,7 @@ impl EditorState {
                 iced_widget::text(format!("{mode_label}  Ln {line}, Col {col}"))
                     .font(Font::MONOSPACE)
                     .size(11.0)
-                    .color(Color::WHITE)
+                    .color(oklab::lighten_for_size(Color::WHITE, 11.0))
                     .into(),
             ])
         )
@@ -3084,6 +3266,7 @@ impl EditorState {
                             font_size: self.font_size,
                             top_pad: title_bar_h,
                             item_offsets: self.item_offsets(tb.id),
+                            indicator: self.line_indicator,
                         })
                         .width(Length::Fill)
                         .height(Length::Fill)
@@ -3103,10 +3286,12 @@ impl EditorState {
                         global_line_offset: 0,
                         font_size: self.font_size,
                         scroll_offset: self.scroll_offset,
-                        cursor_line,
+                        cursor_line: if is_focused { Some(cursor_line) } else { None },
                         top_pad: title_bar_h,
                         line_decors: decors,
                         item_offsets: self.item_offsets(tb.id),
+                        indicator: self.line_indicator,
+                        rainbow: self.gutter_rainbow,
                     };
                     let gw = gutter.gutter_width();
 
@@ -3172,10 +3357,12 @@ impl EditorState {
                         global_line_offset: global_line,
                         font_size: self.font_size,
                         scroll_offset: 0.0,
-                        cursor_line,
+                        cursor_line: if is_focused { Some(cursor_line) } else { None },
                         top_pad,
                         line_decors: decors,
                         item_offsets: self.item_offsets(tb.id),
+                        indicator: self.line_indicator,
+                        rainbow: self.gutter_rainbow,
                     };
                     global_line += line_count;
                     let gw = gutter.gutter_width();
@@ -3186,6 +3373,7 @@ impl EditorState {
                             font_size: self.font_size,
                             top_pad,
                             item_offsets: self.item_offsets(tb.id),
+                            indicator: self.line_indicator,
                         })
                         .width(Length::Fill)
                         .height(Length::Fixed(editor_h))
@@ -3377,16 +3565,27 @@ impl EditorState {
             match item {
                 LayerItem::Inline(r) => {
                     let color = if r.is_error { p.red } else { p.green };
-                    let el: Element<'a, Message, Theme, iced_wgpu::Renderer> =
-                        iced_widget::container(
-                            iced_widget::text(&r.text)
-                                .font(syntax::EDITOR_FONT)
-                                .size(self.font_size)
-                                .color(color)
-                        )
-                        .padding(Padding { top: 0.0, right: 8.0, bottom: 0.0, left: 40.0 })
-                        .width(Length::Fill)
-                        .into();
+                    let inner = iced_widget::container(
+                        iced_widget::text(&r.text)
+                            .font(syntax::EDITOR_FONT)
+                            .size(self.font_size)
+                            .color(oklab::lighten_for_size(color, self.font_size))
+                    )
+                    .padding(Padding { top: 0.0, right: 8.0, bottom: 0.0, left: 40.0 })
+                    .width(Length::Fill);
+                    // Errors don't carry a copyable result value, so they
+                    // don't get the gesture wrapper.
+                    let el: Element<'a, Message, Theme, iced_wgpu::Renderer> = if r.is_error {
+                        inner.into()
+                    } else {
+                        let bid = r.anchor.block_id;
+                        let line = r.anchor.after_line;
+                        MouseArea::new(inner)
+                            .on_press(Message::InlineResultPress { block_id: bid, after_line: line })
+                            .on_release(Message::InlineResultRelease)
+                            .on_double_click(Message::InlineResultDoubleClick { block_id: bid, after_line: line })
+                            .into()
+                    };
                     anchored.push(AnchoredItem {
                         after_line: *after_line,
                         height: item.element_height(lh, self.font_size),
@@ -3404,7 +3603,7 @@ impl EditorState {
                                 let mut txt = iced_widget::text(cell)
                                     .font(syntax::EDITOR_FONT)
                                     .size(self.font_size)
-                                    .color(p.text);
+                                    .color(oklab::lighten_for_size(p.text, self.font_size));
                                 if is_header {
                                     txt = txt.font(Font { weight: iced_wgpu::core::font::Weight::Bold, ..syntax::EDITOR_FONT });
                                 }
@@ -3599,7 +3798,7 @@ impl EditorState {
             iced_widget::text(match_label)
                 .font(Font::MONOSPACE)
                 .size(11.0)
-                .color(p.overlay1)
+                .color(oklab::lighten_for_size(p.overlay1, 11.0))
                 .into();
 
         let btn = |txt: String, msg: Message| -> Element<'_, Message, Theme, iced_wgpu::Renderer> {
@@ -3709,6 +3908,8 @@ struct Cursorline {
     top_pad: f32,
     /// (after_line, height) pairs from anchored children — shifts y for lines below.
     item_offsets: Vec<(usize, f32)>,
+    /// `Off` suppresses the row-highlight band; `On` and `Vim` show it.
+    indicator: LineIndicator,
 }
 
 impl canvas::Program<Message, Theme, iced_wgpu::Renderer> for Cursorline {
@@ -3730,21 +3931,23 @@ impl canvas::Program<Message, Theme, iced_wgpu::Renderer> for Cursorline {
         frame.fill_rectangle(Point::ORIGIN, bounds.size(), p.base);
 
         if let Some(line) = self.cursor_line {
-            let lh = self.font_size * 1.3;
-            let extra: f32 = self.item_offsets.iter()
-                .filter(|(after, _)| *after < line)
-                .map(|(_, h)| h)
-                .sum();
-            let y = self.top_pad + line as f32 * lh + extra;
-            if y < bounds.height && y + lh > 0.0 {
-                // ~6% tint of the foreground color. Reads as a faint band in
-                // both light and dark themes without screaming.
-                let band = Color { a: 0.06, ..p.text };
-                frame.fill_rectangle(
-                    Point::new(0.0, y),
-                    iced_wgpu::core::Size::new(bounds.width, lh),
-                    band,
-                );
+            if self.indicator != LineIndicator::Off {
+                let lh = self.font_size * 1.3;
+                let extra: f32 = self.item_offsets.iter()
+                    .filter(|(after, _)| *after < line)
+                    .map(|(_, h)| h)
+                    .sum();
+                let y = self.top_pad + line as f32 * lh + extra;
+                if y < bounds.height && y + lh > 0.0 {
+                    // ~6% tint of the foreground color. Reads as a faint band in
+                    // both light and dark themes without screaming.
+                    let band = Color { a: 0.06, ..p.text };
+                    frame.fill_rectangle(
+                        Point::new(0.0, y),
+                        iced_wgpu::core::Size::new(bounds.width, lh),
+                        band,
+                    );
+                }
             }
         }
 
@@ -3757,10 +3960,24 @@ struct Gutter {
     global_line_offset: usize,
     font_size: f32,
     scroll_offset: f32,
-    cursor_line: usize,
+    /// Cursor line within this block, only when the block is focused. Drives
+    /// the rainbow line-number coloring; `None` falls back to a flat dim hue.
+    cursor_line: Option<usize>,
     top_pad: f32,
     line_decors: Vec<LineDecor>,
     item_offsets: Vec<(usize, f32)>,
+    indicator: LineIndicator,
+    rainbow: bool,
+}
+
+/// Distance-driven fade ratio for the gutter rainbow. `0.0` at the cursor
+/// (full saturation), `1.0` at the far end of the fade window (fully grey).
+/// Width is 2.5 full passes through the shared 8-slot palette.
+const GUTTER_FADE_CYCLES: f32 = 2.5;
+
+fn gutter_fade_t(distance: usize) -> f32 {
+    let max_d = GUTTER_FADE_CYCLES * syntax::USER_IDENT_PALETTE_SIZE as f32;
+    (distance as f32 / max_d).min(1.0)
 }
 
 impl Gutter {
@@ -3799,9 +4016,17 @@ impl canvas::Program<Message, Theme, iced_wgpu::Renderer> for Gutter {
             );
         }
 
-        let first_visible = (self.scroll_offset / lh).floor() as usize;
-        let sub_pixel = self.scroll_offset - first_visible as f32 * lh;
         let visible_count = (bounds.height / lh).ceil() as usize + 1;
+        // Locally clamp `scroll_offset` against the gutter's own bounds —
+        // the editor's `Action::Scroll` ceiling uses `(line_count - 1) * lh`,
+        // which over-scrolls short documents (gutter slides off the top,
+        // shows empty). Keep the same first-line / sub-pixel math but on the
+        // bounded value so the gutter never disappears.
+        let content_h = self.line_count as f32 * lh;
+        let max_scroll = (content_h - bounds.height + self.top_pad).max(0.0);
+        let eff_scroll = self.scroll_offset.min(max_scroll);
+        let first_visible = (eff_scroll / lh).floor() as usize;
+        let sub_pixel = eff_scroll - first_visible as f32 * lh;
 
         let gw = self.gutter_width();
 
@@ -3850,21 +4075,53 @@ impl canvas::Program<Message, Theme, iced_wgpu::Renderer> for Gutter {
                     );
                     frame.stroke(&path, canvas::Stroke::default()
                         .with_width(1.0)
-                        .with_color(p.overlay1));
+                        .with_color(oklab::lighten_for_size(p.overlay1, 1.0)));
                 }
                 LineDecor::None => {}
             }
 
-            let color = if line_idx == self.cursor_line {
-                p.overlay1
+            // `Off` skips the number entirely — gutter strip stays for
+            // layout (and decors still draw above), but no digits.
+            if self.indicator == LineIndicator::Off {
+                continue;
+            }
+
+            let raw_color = if self.rainbow {
+                match self.cursor_line {
+                    Some(cl) if line_idx == cl => p.text,
+                    Some(cl) if line_idx > cl => {
+                        let d = line_idx - cl - 1;
+                        let hue = syntax::rainbow_color(d as u32);
+                        oklab::desaturate(hue, gutter_fade_t(d))
+                    }
+                    Some(cl) /* line_idx < cl */ => {
+                        let d = cl - line_idx - 1;
+                        let hue = oklab::invert_hue(syntax::rainbow_color(d as u32));
+                        oklab::desaturate(hue, gutter_fade_t(d))
+                    }
+                    None => p.surface2,
+                }
             } else {
-                p.surface2
+                // Plain gutter: cursor line bright, others dim.
+                match self.cursor_line {
+                    Some(cl) if line_idx == cl => p.text,
+                    _ => p.surface2,
+                }
+            };
+            // Vim mode: relative numbers everywhere except the cursor line
+            // itself, which stays absolute (the standard vim hybrid look).
+            let label = match (self.indicator, self.cursor_line) {
+                (LineIndicator::Vim, Some(cl)) if line_idx != cl => {
+                    let d = if line_idx > cl { line_idx - cl } else { cl - line_idx };
+                    format!("{d}")
+                }
+                _ => format!("{}", line_num + 1),
             };
             frame.fill_text(canvas::Text {
-                content: format!("{}", line_num + 1),
+                content: label,
                 position: Point::new(gw - 8.0, y),
                 max_width: gw,
-                color,
+                color: oklab::lighten_for_size(raw_color, self.font_size),
                 size: Pixels(self.font_size),
                 line_height: LineHeight::Relative(1.3),
                 font: Font::MONOSPACE,

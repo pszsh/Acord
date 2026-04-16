@@ -113,12 +113,16 @@ fn total_items_height<M, T>(items: &[AnchoredItem<'_, M, T>]) -> f32 {
 }
 
 /// Build iced Spans from a LayoutRun's glyphs, grouping consecutive glyphs by color.
+/// `font_size_px` drives perceptual brightness compensation against the
+/// dark-theme background — see `oklab::lighten_for_size`.
 fn build_color_spans<'a>(
     text: &'a str,
     glyphs: &[cosmic_text::LayoutGlyph],
+    font_size_px: f32,
 ) -> Vec<Span<'a>> {
-    fn cosmic_to_iced(c: cosmic_text::Color) -> Color {
-        Color::from_rgba8(c.r(), c.g(), c.b(), c.a() as f32 / 255.0)
+    fn cosmic_to_iced(c: cosmic_text::Color, font_size_px: f32) -> Color {
+        let raw = Color::from_rgba8(c.r(), c.g(), c.b(), c.a() as f32 / 255.0);
+        crate::oklab::lighten_for_size(raw, font_size_px)
     }
 
     if glyphs.is_empty() {
@@ -135,7 +139,7 @@ fn build_color_spans<'a>(
             if end > seg_start {
                 let mut span = Span::new(&text[seg_start..end]);
                 if let Some(c) = cur_color {
-                    span = span.color(cosmic_to_iced(c));
+                    span = span.color(cosmic_to_iced(c, font_size_px));
                 }
                 spans.push(span);
             }
@@ -147,7 +151,7 @@ fn build_color_spans<'a>(
     if seg_start < text.len() {
         let mut span = Span::new(&text[seg_start..]);
         if let Some(c) = cur_color {
-            span = span.color(cosmic_to_iced(c));
+            span = span.color(cosmic_to_iced(c, font_size_px));
         }
         spans.push(span);
     }
@@ -1224,7 +1228,7 @@ where
                         buffer.lines[i].layout_opt()
                             .map(|layouts| layouts.iter().flat_map(|l| l.glyphs.iter().cloned()).collect())
                             .unwrap_or_default();
-                    let spans = build_color_spans(line_text, &glyphs);
+                    let spans = build_color_spans(line_text, &glyphs, f32::from(text_size));
                     paras.push(iced_graphics::text::Paragraph::with_spans(Text {
                         content: spans.as_slice(),
                         bounds: Size::new(text_bounds.width, line_h),

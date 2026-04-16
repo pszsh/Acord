@@ -39,8 +39,16 @@ const COR_TYPE_ANN: u8 = 64;
 // references resolve to the same slot so the name reads the same color
 // throughout the document.
 const USER_IDENT_BASE: u8 = 70;
-const USER_IDENT_PALETTE_SIZE: u8 = 8;
-const USER_IDENT_HOP: u32 = 3;
+pub const USER_IDENT_PALETTE_SIZE: u8 = 8;
+pub const USER_IDENT_HOP: u32 = 3;
+
+/// The 8-slot rainbow shared by user-identifier highlighting and the gutter
+/// line-number rainbow. Same hop-of-3 walk through the same palette so the
+/// two systems read as one design.
+pub fn rainbow_color(idx: u32) -> Color {
+    let slot = ((idx * USER_IDENT_HOP) % USER_IDENT_PALETTE_SIZE as u32) as u8;
+    highlight_color(USER_IDENT_BASE + slot)
+}
 
 const MD_HEADING_MARKER: u8 = 26;
 const MD_H1: u8 = 27;

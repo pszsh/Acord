@@ -53,6 +53,11 @@ class ConfigManager {
         set { config["lineIndicatorMode"] = newValue; save() }
     }
 
+    var gutterRainbow: Bool {
+        get { (config["gutterRainbow"] ?? "true") != "false" }
+        set { config["gutterRainbow"] = newValue ? "true" : "false"; save() }
+    }
+
     var zoomLevel: CGFloat {
         get { CGFloat(Double(config["zoomLevel"] ?? "0") ?? 0) }
         set { config["zoomLevel"] = String(Double(newValue)); save() }

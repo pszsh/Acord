@@ -253,6 +253,18 @@ class IcedViewportView: NSView {
         }
     }
 
+    func setLineIndicator(_ mode: String) {
+        guard let h = viewportHandle else { return }
+        mode.withCString { cstr in
+            viewport_set_line_indicator(h, cstr)
+        }
+    }
+
+    func setGutterRainbow(_ enabled: Bool) {
+        guard let h = viewportHandle else { return }
+        viewport_set_gutter_rainbow(h, enabled)
+    }
+
     /// Returns 0 = Live, 1 = Editor, 2 = View.
     func renderMode() -> UInt32 {
         guard let h = viewportHandle else { return 0 }

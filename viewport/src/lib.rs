@@ -9,6 +9,7 @@ mod handle;
 pub mod heading_block;
 pub mod hr_block;
 pub mod module;
+pub mod oklab;
 pub mod palette;
 pub mod selection;
 pub mod sidecar;
@@ -209,6 +210,27 @@ pub extern "C" fn viewport_set_theme(handle: *mut ViewportHandle, name: *const c
     };
     palette::set_theme(s);
     if let Some(h) = unsafe { handle.as_mut() } {
+        h.needs_redraw = true;
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn viewport_set_line_indicator(handle: *mut ViewportHandle, mode: *const c_char) {
+    let s = if mode.is_null() {
+        "on"
+    } else {
+        unsafe { CStr::from_ptr(mode) }.to_str().unwrap_or("on")
+    };
+    if let Some(h) = unsafe { handle.as_mut() } {
+        h.state.line_indicator = editor::LineIndicator::from_str(s);
+        h.needs_redraw = true;
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn viewport_set_gutter_rainbow(handle: *mut ViewportHandle, enabled: bool) {
+    if let Some(h) = unsafe { handle.as_mut() } {
+        h.state.gutter_rainbow = enabled;
         h.needs_redraw = true;
     }
 }

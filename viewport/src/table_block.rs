@@ -10,6 +10,7 @@ use iced_widget::MouseArea;
 use iced_wgpu::core::mouse::Interaction;
 
 use crate::block::{Block, BlockCommand, LayeredView, ViewCtx};
+use crate::oklab;
 use crate::palette;
 use crate::selection::{BlockId, InnerPath};
 use crate::syntax::EDITOR_FONT;
@@ -1056,7 +1057,7 @@ where
                 text(letter)
                     .size(chrome_font)
                     .font(EDITOR_FONT)
-                    .color(p.overlay0)
+                    .color(oklab::lighten_for_size(p.overlay0, chrome_font))
             )
             .width(Length::Fixed(*w))
             .height(Length::Fixed(header_h))
@@ -1108,7 +1109,7 @@ where
                 text(label)
                     .size(chrome_font)
                     .font(EDITOR_FONT)
-                    .color(p.overlay0)
+                    .color(oklab::lighten_for_size(p.overlay0, chrome_font))
             )
             .width(Length::Fixed(ROW_NUMBER_WIDTH))
             .padding(Padding { top: 4.0, right: 6.0, bottom: 0.0, left: 0.0 })
@@ -1196,7 +1197,7 @@ where
                 let display = text(display_text)
                     .size(font_size)
                     .font(font)
-                    .color(label_color);
+                    .color(oklab::lighten_for_size(label_color, font_size));
 
                 let container_style = move |_theme: &Theme| {
                     let ws = palette::widget_surface();
@@ -1212,7 +1213,7 @@ where
                     container::Style {
                         background,
                         border: cell_border(),
-                        text_color: Some(label_color),
+                        text_color: Some(oklab::lighten_for_size(label_color, font_size)),
                         shadow: Shadow::default(),
                         snap: false,
                     }

@@ -7,6 +7,7 @@ use iced_widget::canvas;
 use iced_widget::container;
 
 use crate::block::{Block, BlockCommand, LayeredView, ViewCtx};
+use crate::oklab;
 use crate::palette;
 use crate::selection::{BlockId, InnerPath};
 
@@ -172,7 +173,7 @@ impl<Message: Clone> canvas::Program<Message, Theme, iced_wgpu::Renderer> for Tr
                     &connector,
                     canvas::Stroke::default()
                         .with_width(1.0)
-                        .with_color(connector_color),
+                        .with_color(oklab::lighten_for_size(connector_color, 1.0)),
                 );
 
                 if !node.is_last {
@@ -184,7 +185,7 @@ impl<Message: Clone> canvas::Program<Message, Theme, iced_wgpu::Renderer> for Tr
                         &vert,
                         canvas::Stroke::default()
                             .with_width(1.0)
-                            .with_color(connector_color),
+                            .with_color(oklab::lighten_for_size(connector_color, 1.0)),
                     );
                 }
             }
@@ -209,7 +210,7 @@ impl<Message: Clone> canvas::Program<Message, Theme, iced_wgpu::Renderer> for Tr
                 content: display,
                 position: Point::new(indent_x, y + 2.0),
                 max_width: bounds.width - indent_x,
-                color: text_color,
+                color: oklab::lighten_for_size(text_color, self.font_size),
                 size: Pixels(self.font_size),
                 line_height: LineHeight::Relative(1.3),
                 font: Font::MONOSPACE,

@@ -132,6 +132,11 @@ class AppState: ObservableObject {
     private var autoSaveDirty = false
     private var autoSaveCoolingDown = false
     private let autoSaveQueue = DispatchQueue(label: "com.acord.autosave")
+    /// Per-note autosave file path, established on the first write and never
+    /// changed for the rest of the session. Stops the title-derived filename
+    /// from re-deriving on every keystroke and littering the notes directory
+    /// with `u.md`, `us.md`, `use.md`, ...
+    private var autoSavePaths: [UUID: URL] = [:]
 
     init() {
         let id = bridge.newDocument()
@@ -158,10 +163,10 @@ class AppState: ObservableObject {
 
         let text = documentText
         let noteID = currentNoteID
-        let title = extractTitle(from: text)
+        let url = resolveAutoSaveURL(noteID: noteID, text: text)
 
         autoSaveQueue.async { [weak self] in
-            self?.writeAutoSaveFile(noteID: noteID, title: title, text: text)
+            Self.writeAutoSaveFile(at: url, text: text)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
                 guard let self = self else { return }
                 self.autoSaveCoolingDown = false
@@ -244,19 +249,47 @@ class AppState: ObservableObject {
         return cleaned.isEmpty ? UUID().uuidString : cleaned
     }
 
-    private func writeAutoSaveFile(noteID: UUID, title: String, text: String) {
-        let dir = ConfigManager.shared.autoSaveDirectory
-        let dirURL = URL(fileURLWithPath: dir)
+    /// Resolve the autosave file URL for `noteID`. First call for a noteID
+    /// derives a filename from the title (or the UUID when there's no title);
+    /// the resulting path is then locked in for the rest of the session, so
+    /// later keystrokes can't spawn a fresh file each time the title grows.
+    /// Must be called on the main thread (mutates `autoSavePaths`).
+    private func resolveAutoSaveURL(noteID: UUID, text: String) -> URL {
+        if let url = autoSavePaths[noteID] {
+            return url
+        }
+        let dirURL = URL(fileURLWithPath: ConfigManager.shared.autoSaveDirectory)
         try? FileManager.default.createDirectory(at: dirURL, withIntermediateDirectories: true)
-
+        let title = extractTitle(from: text)
         let filename: String
         if title == "Untitled" {
             filename = noteID.uuidString.lowercased()
         } else {
             filename = sanitizeFilename(title)
         }
-        let fileURL = dirURL.appendingPathComponent(filename + ".md")
-        try? text.write(to: fileURL, atomically: true, encoding: .utf8)
+        let url = dirURL.appendingPathComponent(filename + ".md")
+        autoSavePaths[noteID] = url
+        return url
+    }
+
+    /// Background-safe atomic write. No path resolution here — the URL was
+    /// resolved on the main thread before dispatch.
+    private static func writeAutoSaveFile(at url: URL, text: String) {
+        try? text.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// Strip the `<!-- acord-archive ... -->` sidecar comment from `text`.
+    /// The markdown body before the comment is the user's actual content;
+    /// non-markdown destinations (.rs, .json, .csv-source, etc.) must not
+    /// inherit the comment because it isn't valid syntax in those formats.
+    private static func stripArchiveForExternalSave(_ text: String) -> String {
+        var body = stripSidecarArchive(text)
+        // `stripSidecarArchive` keeps trailing whitespace — trim so we don't
+        // leave a flapping blank line where the comment used to be.
+        while body.hasSuffix("\n\n") {
+            body.removeLast()
+        }
+        return body
     }
 
     // MARK: - Note operations
@@ -313,14 +346,9 @@ class AppState: ObservableObject {
     }
 
     func saveNote() {
-        let textToSave: String
-        if currentFileFormat.isCSV {
-            textToSave = markdownTableToCSV(documentText)
-        } else {
-            textToSave = documentText
-        }
-        bridge.setText(currentNoteID, text: textToSave)
+        bridge.setText(currentNoteID, text: documentText)
         if let url = currentFileURL {
+            let textToSave = textForExternalSave(format: currentFileFormat)
             try? textToSave.write(to: url, atomically: true, encoding: .utf8)
         }
         let _ = bridge.cacheSave(currentNoteID)
@@ -330,16 +358,27 @@ class AppState: ObservableObject {
 
     func saveNoteToFile(_ url: URL) {
         let format = FileFormat.from(filename: url.lastPathComponent)
-        let textToSave: String
-        if format.isCSV {
-            textToSave = markdownTableToCSV(documentText)
-        } else {
-            textToSave = documentText
-        }
+        let textToSave = textForExternalSave(format: format)
         try? textToSave.write(to: url, atomically: true, encoding: .utf8)
         currentFileURL = url
         currentFileFormat = format
+        // An explicit save-to-disk locks the autosave path to the same file
+        // for the rest of the session — keystrokes after Save As shouldn't
+        // start a fresh autosave file under the old name.
+        if format.isMarkdown {
+            autoSavePaths[currentNoteID] = url
+        }
         modified = false
+    }
+
+    /// Project the in-memory `documentText` onto the right shape for an
+    /// external file format. CSV gets converted from the markdown table,
+    /// non-markdown formats get the sidecar archive comment stripped (the
+    /// HTML comment isn't valid in .rs/.json/etc.), markdown passes through.
+    private func textForExternalSave(format: FileFormat) -> String {
+        if format.isCSV { return markdownTableToCSV(documentText) }
+        if format.isMarkdown { return documentText }
+        return AppState.stripArchiveForExternalSave(documentText)
     }
 
     func loadNoteFromFile(_ url: URL) {
@@ -352,6 +391,15 @@ class AppState: ObservableObject {
                 documentText = csvToMarkdownTable(text)
             } else {
                 documentText = text
+            }
+            // Lock the autosave path to the loaded file when it lives in the
+            // notes dir. Outside that dir, the user picked their own path —
+            // we won't shadow it with an autosave duplicate.
+            let dir = URL(fileURLWithPath: ConfigManager.shared.autoSaveDirectory)
+                .standardizedFileURL
+            let parent = url.deletingLastPathComponent().standardizedFileURL
+            if format.isMarkdown && parent == dir {
+                autoSavePaths[id] = url
             }
             modified = false
             let _ = bridge.cacheSave(id)
@@ -465,6 +513,9 @@ class AppState: ObservableObject {
 
     func deleteNote(_ id: UUID) {
         bridge.deleteNote(id)
+        if let url = autoSavePaths.removeValue(forKey: id) {
+            try? FileManager.default.removeItem(at: url)
+        }
         if id == currentNoteID {
             newNote()
         }
@@ -474,6 +525,9 @@ class AppState: ObservableObject {
     func deleteNotes(_ ids: Set<UUID>) {
         for id in ids {
             bridge.deleteNote(id)
+            if let url = autoSavePaths.removeValue(forKey: id) {
+                try? FileManager.default.removeItem(at: url)
+            }
         }
         if ids.contains(currentNoteID) {
             let remaining = noteList.first { !ids.contains($0.id) }
@@ -505,9 +559,9 @@ class AppState: ObservableObject {
     /// state (including visible eval results).
     func writeAutosavedCopy(text: String) {
         let noteID = currentNoteID
-        let title = extractTitle(from: text)
-        autoSaveQueue.async { [weak self] in
-            self?.writeAutoSaveFile(noteID: noteID, title: title, text: text)
+        let url = resolveAutoSaveURL(noteID: noteID, text: text)
+        autoSaveQueue.async {
+            Self.writeAutoSaveFile(at: url, text: text)
         }
     }
 
@@ -532,6 +586,9 @@ class AppState: ObservableObject {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             bridge.deleteNote(id)
+            if let url = autoSavePaths.removeValue(forKey: id) {
+                try? FileManager.default.removeItem(at: url)
+            }
         }
     }
 }

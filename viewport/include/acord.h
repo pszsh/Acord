@@ -13,9 +13,17 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#define BASE_BOOST 0.30
+
+#define THRESHOLD_PX 6.0
+
 #define EVAL_RESULT_KIND 24
 
 #define EVAL_ERROR_KIND 25
+
+#define USER_IDENT_PALETTE_SIZE 8
+
+#define USER_IDENT_HOP 3
 
 typedef struct TextPos TextPos;
 
@@ -58,6 +66,10 @@ char *viewport_get_text(struct ViewportHandle *handle);
 void viewport_free_string(char *s);
 
 void viewport_set_theme(struct ViewportHandle *handle, const char *name);
+
+void viewport_set_line_indicator(struct ViewportHandle *handle, const char *mode);
+
+void viewport_set_gutter_rainbow(struct ViewportHandle *handle, bool enabled);
 
 void viewport_send_command(struct ViewportHandle *handle, uint32_t command);
 

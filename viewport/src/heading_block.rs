@@ -7,6 +7,7 @@ use iced_wgpu::core::font::Weight;
 use iced_widget::canvas;
 
 use crate::block::{Block, BlockCommand, LayeredView, ViewCtx};
+use crate::oklab;
 use crate::palette;
 use crate::selection::{BlockId, InnerPath};
 
@@ -87,7 +88,7 @@ impl<Message: Clone> canvas::Program<Message, Theme, iced_wgpu::Renderer> for He
             content: self.text.clone(),
             position: Point::new(8.0, 4.0),
             max_width: bounds.width - 16.0,
-            color,
+            color: oklab::lighten_for_size(color, self.font_size),
             size: Pixels(self.font_size),
             line_height: LineHeight::Relative(1.4),
             font: Font { weight: self.level.weight(), ..Font::DEFAULT },

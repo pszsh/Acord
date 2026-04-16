@@ -64,20 +64,21 @@ pub static MOCHA: Palette = Palette {
 /// contrast. The signature KiCad schematic-editor feel: vivid greens,
 /// bright cyans, punchy reds and yellows on a deep navy base.
 pub static KICAD: Palette = Palette {
-    rosewater: Color::from_rgb(0.984, 0.639, 0.757),
-    flamingo:  Color::from_rgb(0.965, 0.533, 0.404),
-    pink:      Color::from_rgb(0.973, 0.345, 0.718),
-    mauve:     Color::from_rgb(0.635, 0.282, 0.980),
-    red:       Color::from_rgb(0.914, 0.376, 0.376),
-    maroon:    Color::from_rgb(0.949, 0.416, 0.584),
-    peach:     Color::from_rgb(0.965, 0.533, 0.404),
-    yellow:    Color::from_rgb(0.988, 0.831, 0.349),
-    green:     Color::from_rgb(0.403, 0.972, 0.534),
-    teal:      Color::from_rgb(0.310, 1.000, 0.882),
-    sky:       Color::from_rgb(0.403, 0.813, 0.972),
-    sapphire:  Color::from_rgb(0.384, 0.635, 0.949),
-    blue:      Color::from_rgb(0.337, 0.475, 0.988),
-    lavender:  Color::from_rgb(1.000, 0.718, 0.937),
+    // From acord-palette-used.svg, 13 user-kept swatches (rounded to f32).
+    rosewater: Color::from_rgb(0.976, 0.639, 0.984),  // (249,163,251) light pink
+    flamingo:  Color::from_rgb(1.000, 0.718, 0.937),  // (255,183,239) pink-light
+    pink:      Color::from_rgb(0.988, 0.545, 0.808),  // (252,139,206)
+    mauve:     Color::from_rgb(0.741, 0.494, 0.984),  // (189,126,251)
+    red:       Color::from_rgb(0.973, 0.545, 0.545),  // (248,139,139)
+    maroon:    Color::from_rgb(0.933, 0.506, 0.639),  // (238,129,163)
+    peach:     Color::from_rgb(1.000, 0.667, 0.396),  // (255,170,101)
+    yellow:    Color::from_rgb(1.000, 0.886, 0.486),  // (255,226,124)
+    green:     Color::from_rgb(0.592, 0.925, 0.671),  // (151,236,171)
+    teal:      Color::from_rgb(0.310, 1.000, 0.882),  // (79,255,225)
+    sky:       Color::from_rgb(0.404, 0.812, 0.973),  // (103,207,248)
+    sapphire:  Color::from_rgb(0.384, 0.635, 0.949),  // unchanged — unused slot
+    blue:      Color::from_rgb(0.310, 0.643, 0.992),  // (79,164,253)
+    lavender:  Color::from_rgb(0.957, 0.737, 0.373),  // (244,188,95) amber accent
     text:      Color::from_rgb(0.965, 0.954, 0.969),
     subtext1:  Color::from_rgb(0.824, 0.813, 0.852),
     subtext0:  Color::from_rgb(0.679, 0.668, 0.725),
