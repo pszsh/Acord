@@ -39,8 +39,8 @@ pub struct ViewportHandle {
     renderer: iced_wgpu::Renderer,
     viewport: Viewport,
     cache: user_interface::Cache,
-    state: EditorState,
-    events: Vec<Event>,
+    pub state: EditorState,
+    pub events: Vec<Event>,
     cursor: iced_wgpu::core::mouse::Cursor,
     /// Set true on any FFI input or state-change call. handle::render() early-returns
     /// when this is false AND no pending eval debounce, so the vsync display link
