@@ -165,21 +165,6 @@ pub struct InlinePressState {
 
 const LONG_PRESS_MS: u128 = 300;
 
-/// Write `s` to the macOS system clipboard via `pbcopy`. Mirrors the
-/// implementation in `handle.rs::MacClipboard::write` so the editor can copy
-/// without threading a clipboard handle through update().
-fn pbcopy(s: &str) {
-    use std::io::Write;
-    if let Ok(mut child) = std::process::Command::new("pbcopy")
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-    {
-        if let Some(stdin) = child.stdin.as_mut() {
-            let _ = stdin.write_all(s.as_bytes());
-        }
-        let _ = child.wait();
-    }
-}
 pub const ERROR_PREFIX: &str = "⚠ ";
 
 const EVAL_DEBOUNCE_MS: u128 = 300;
@@ -392,6 +377,11 @@ pub struct EditorState {
     /// Whether the gutter line numbers cycle through the rainbow palette
     /// based on distance from the cursor. Independent of `line_indicator`.
     pub gutter_rainbow: bool,
+
+    /// Cross-platform clipboard out-channel. Editor logic writes here;
+    /// the shell drains it after each frame via `viewport_take_clipboard`
+    /// and pushes the text to the system clipboard.
+    pub pending_clipboard: Option<String>,
 }
 
 /// Per-eval table name→id bookkeeping. `keys` is every alias a table is
@@ -504,6 +494,7 @@ impl EditorState {
             inline_press: None,
             line_indicator: LineIndicator::On,
             gutter_rainbow: true,
+            pending_clipboard: None,
         }
     }
 
@@ -3046,15 +3037,14 @@ impl EditorState {
 
     /// Copy `{line}  → {value}` to clipboard. Used by both long-press (just
     /// copy) and double-click (copy then insert template).
-    fn copy_inline_result(&self, block_id: crate::selection::BlockId, after_line: usize) {
+    fn copy_inline_result(&mut self, block_id: crate::selection::BlockId, after_line: usize) {
         let value = match self.inline_result_value(block_id, after_line) {
             Some(v) => v,
             None => return,
         };
         let line = self.read_line_at(block_id, after_line).unwrap_or_default();
         let trimmed = line.trim_end();
-        let clip = format!("{trimmed}  {RESULT_PREFIX}{value}");
-        pbcopy(&clip);
+        self.pending_clipboard = Some(format!("{trimmed}  {RESULT_PREFIX}{value}"));
     }
 
     /// Double-click on a result: copy + drop a `let  = value` line two lines

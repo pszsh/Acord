@@ -7,67 +7,71 @@ use iced_wgpu::core::renderer::Style;
 use iced_wgpu::core::time::Instant;
 use iced_wgpu::core::{clipboard, keyboard, mouse, window, Color, Event, Font, Pixels, Point, Size, Theme};
 use iced_wgpu::Engine;
-use raw_window_handle::{
-    AppKitDisplayHandle, AppKitWindowHandle, RawDisplayHandle, RawWindowHandle,
-};
+use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
+#[cfg(target_os = "macos")]
+use raw_window_handle::{AppKitDisplayHandle, AppKitWindowHandle};
+#[cfg(target_os = "windows")]
+use raw_window_handle::{Win32WindowHandle, WindowsDisplayHandle};
 
 use crate::editor::{EditorState, Message, RenderMode};
 use crate::palette;
 use crate::table_block::TableMessage;
 use crate::ViewportHandle;
 
-struct MacClipboard;
+struct AcordClipboard {
+    board: std::cell::RefCell<arboard::Clipboard>,
+}
 
-impl clipboard::Clipboard for MacClipboard {
+impl clipboard::Clipboard for AcordClipboard {
     fn read(&self, _kind: clipboard::Kind) -> Option<String> {
-        // `from_utf8_lossy` rather than strict `from_utf8` — some rich-text
-        // clipboard sources produce stray bytes when pbpaste coerces their
-        // format to plain text, and a single bad byte would otherwise drop
-        // the whole paste.
-        //
-        // Line-ending normalisation: web pages, Discord, and some cross-
-        // platform apps keep `\r\n` in the pasteboard. Iced's buffer and
-        // our own gutter line counter disagree about whether `\r` is its
-        // own row, which drifts the gutter against the cursor on every
-        // paste. Collapse every CR to LF before handing the text upward.
-        std::process::Command::new("pbpaste")
-            .output()
+        // arboard uses NSPasteboard on macOS, Win32 on Windows — no subprocess.
+        // Line-ending normalisation: web pages and cross-platform apps keep
+        // `\r\n` in the pasteboard; collapse to `\n` so iced's buffer and
+        // our gutter line counter agree.
+        self.board.borrow_mut()
+            .get_text()
             .ok()
-            .map(|o| {
-                let s = String::from_utf8_lossy(&o.stdout).into_owned();
-                s.replace("\r\n", "\n").replace('\r', "\n")
-            })
+            .map(|s| s.replace("\r\n", "\n").replace('\r', "\n"))
     }
 
     fn write(&mut self, _kind: clipboard::Kind, contents: String) {
-        use std::io::Write;
-        if let Ok(mut child) = std::process::Command::new("pbcopy")
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-        {
-            if let Some(stdin) = child.stdin.as_mut() {
-                let _ = stdin.write_all(contents.as_bytes());
-            }
-            let _ = child.wait();
-        }
+        let _ = self.board.borrow_mut().set_text(contents);
     }
 }
 
 pub fn create(
-    nsview: *mut c_void,
+    native_handle: *mut c_void,
     width: f32,
     height: f32,
     scale: f32,
 ) -> Option<ViewportHandle> {
-    let ptr = NonNull::new(nsview)?;
+    let ptr = NonNull::new(native_handle)?;
+
+    #[cfg(target_os = "macos")]
+    let backends = wgpu::Backends::METAL;
+    #[cfg(target_os = "windows")]
+    let backends = wgpu::Backends::DX12;
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let backends = wgpu::Backends::VULKAN;
 
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::METAL,
+        backends,
         ..Default::default()
     });
 
-    let raw_window = RawWindowHandle::AppKit(AppKitWindowHandle::new(ptr));
-    let raw_display = RawDisplayHandle::AppKit(AppKitDisplayHandle::new());
+    #[cfg(target_os = "macos")]
+    let (raw_window, raw_display) = (
+        RawWindowHandle::AppKit(AppKitWindowHandle::new(ptr)),
+        RawDisplayHandle::AppKit(AppKitDisplayHandle::new()),
+    );
+    #[cfg(target_os = "windows")]
+    let (raw_window, raw_display) = {
+        let mut wh = Win32WindowHandle::new(std::num::NonZero::new(ptr.as_ptr() as isize).unwrap());
+        (
+            RawWindowHandle::Win32(wh),
+            RawDisplayHandle::Windows(WindowsDisplayHandle::new()),
+        )
+    };
 
     let target = wgpu::SurfaceTargetUnsafe::RawHandle {
         raw_display_handle: raw_display,
@@ -181,7 +185,9 @@ pub fn render(handle: &mut ViewportHandle) {
         &mut handle.renderer,
     );
 
-    let mut clipboard = MacClipboard;
+    let mut clipboard = AcordClipboard {
+        board: std::cell::RefCell::new(arboard::Clipboard::new().unwrap()),
+    };
     let mut messages: Vec<Message> = Vec::new();
     let mut consumed: Vec<usize> = Vec::new();
     // Captured during the event scan, applied to `handle.state.mods` AFTER
@@ -625,6 +631,13 @@ pub fn render(handle: &mut ViewportHandle) {
 
     for msg in messages.drain(..) {
         handle.state.update(msg);
+    }
+
+    // Drain any clipboard write the editor queued during update/tick.
+    if let Some(text) = handle.state.pending_clipboard.take() {
+        if let Ok(mut board) = arboard::Clipboard::new() {
+            let _ = board.set_text(text);
+        }
     }
 
     handle.state.tick();
