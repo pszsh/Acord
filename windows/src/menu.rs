@@ -25,6 +25,7 @@ pub enum MenuAction {
     ZoomOut,
     ZoomReset,
     Find,
+    Settings,
     ExportCrate,
 }
 
@@ -53,6 +54,8 @@ impl AppMenu {
         edit.append(&PredefinedMenuItem::select_all(None)).ok();
         edit.append(&PredefinedMenuItem::separator()).ok();
         edit.append(&MenuItem::with_id("find", "Find...", true, Some(Accelerator::new(Some(Modifiers::CONTROL), Code::KeyF)))).ok();
+        edit.append(&PredefinedMenuItem::separator()).ok();
+        edit.append(&MenuItem::with_id("settings", "Settings...", true, Some(Accelerator::new(Some(Modifiers::CONTROL), Code::Comma)))).ok();
         edit.append(&PredefinedMenuItem::separator()).ok();
         edit.append(&MenuItem::with_id("bold", "Bold", true, Some(Accelerator::new(Some(Modifiers::CONTROL), Code::KeyB)))).ok();
         edit.append(&MenuItem::with_id("italic", "Italic", true, Some(Accelerator::new(Some(Modifiers::CONTROL), Code::KeyI)))).ok();
@@ -99,6 +102,7 @@ impl AppMenu {
                 "zoom_out" => Some(MenuAction::ZoomOut),
                 "zoom_reset" => Some(MenuAction::ZoomReset),
                 "find" => Some(MenuAction::Find),
+                "settings" => Some(MenuAction::Settings),
                 "export_crate" => Some(MenuAction::ExportCrate),
                 _ => None,
             }

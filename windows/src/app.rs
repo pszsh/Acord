@@ -75,6 +75,14 @@ impl App {
             MenuAction::Save => self.save_file(),
             MenuAction::SaveAs => self.save_file_as(),
             MenuAction::NewNote => self.new_note(),
+            MenuAction::Settings => {
+                // Open config file in the default editor.
+                let cfg = dirs::home_dir()
+                    .unwrap_or_default()
+                    .join(".acord")
+                    .join("config.json");
+                let _ = std::process::Command::new("notepad").arg(&cfg).spawn();
+            }
             MenuAction::Undo => { /* TODO */ },
             MenuAction::Redo => { /* TODO */ },
             MenuAction::ExportCrate => { /* TODO */ },
