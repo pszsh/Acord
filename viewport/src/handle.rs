@@ -25,11 +25,20 @@ struct AcordClipboard {
 impl clipboard::Clipboard for AcordClipboard {
     fn read(&self, _kind: clipboard::Kind) -> Option<String> {
         // arboard uses NSPasteboard on macOS, Win32 on Windows — no subprocess.
+        // Image-first: if the pasteboard holds a bitmap, encode it to PNG in
+        // the on-disk image cache and yield a markdown reference. Wrapping
+        // newlines guarantee the `![](…)` lands as the only thing on its line
+        // so `parse_image_ref` will pick it up.
+        let mut board = self.board.borrow_mut();
+        if let Ok(img) = board.get_image() {
+            if let Some(path) = crate::editor::write_clipboard_image_to_cache(&img) {
+                return Some(format!("\n![]({})\n", path));
+            }
+        }
         // Line-ending normalisation: web pages and cross-platform apps keep
         // `\r\n` in the pasteboard; collapse to `\n` so iced's buffer and
         // our gutter line counter agree.
-        self.board.borrow_mut()
-            .get_text()
+        board.get_text()
             .ok()
             .map(|s| s.replace("\r\n", "\n").replace('\r', "\n"))
     }

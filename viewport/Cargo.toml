@@ -25,6 +25,7 @@ toml = "0.8"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 base64 = "0.22"
 arboard = "3"
+ureq = "3"
 
 [build-dependencies]
 cbindgen = "0.29"

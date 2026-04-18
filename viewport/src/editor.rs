@@ -609,7 +609,6 @@ impl EditorState {
         self.eval_results.retain(|r| !ids.contains(&r.anchor.block_id));
         self.computed_tables.retain(|t| !ids.contains(&t.anchor.block_id));
         self.computed_trees.retain(|t| !ids.contains(&t.anchor.block_id));
-        self.computed_images.retain(|img| !ids.contains(&img.anchor.block_id));
     }
 
     /// Map a line number in concatenated module source back to a per-block anchor.
@@ -4424,16 +4423,27 @@ fn parse_image_ref(line: &str) -> Option<(String, String)> {
     Some((alt, src))
 }
 
-/// Load an image from a local filesystem path into an `ImageCacheEntry`.
-/// Returns `None` on any failure (missing file, corrupt image, etc.).
+/// Load an image into an `ImageCacheEntry`. Accepts:
+/// - `http://` / `https://` URLs (5s timeout, blocking — guarded by the
+///   per-source cache so the stall only happens on first load).
+/// - `~/`-prefixed paths (expanded against the home directory).
+/// - Absolute or relative filesystem paths.
 fn load_image_from_path(src: &str) -> Option<ImageCacheEntry> {
-    // Expand ~ to home directory.
-    let path = if src.starts_with("~/") {
-        dirs::home_dir()?.join(&src[2..])
+    let bytes = if src.starts_with("http://") || src.starts_with("https://") {
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(5)))
+            .build()
+            .into();
+        let mut resp = agent.get(src).call().ok()?;
+        resp.body_mut().read_to_vec().ok()?
     } else {
-        std::path::PathBuf::from(src)
+        let path = if src.starts_with("~/") {
+            dirs::home_dir()?.join(&src[2..])
+        } else {
+            std::path::PathBuf::from(src)
+        };
+        std::fs::read(&path).ok()?
     };
-    let bytes = std::fs::read(&path).ok()?;
     let reader = image::ImageReader::new(std::io::Cursor::new(&bytes))
         .with_guessed_format()
         .ok()?;
@@ -4443,5 +4453,32 @@ fn load_image_from_path(src: &str) -> Option<ImageCacheEntry> {
         width: dims.0,
         height: dims.1,
     })
+}
+
+/// Encode a clipboard image (RGBA from `arboard`) to PNG and write it into
+/// `~/.acord/cache/images/{hash}.png`. Returns the absolute path as a
+/// String suitable for embedding in a `![]( … )` markdown reference.
+/// Content-addressed: re-pasting the same pixels reuses the same file.
+pub fn write_clipboard_image_to_cache(img: &arboard::ImageData) -> Option<String> {
+    let dir = dirs::home_dir()?.join(".acord").join("cache").join("images");
+    std::fs::create_dir_all(&dir).ok()?;
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    use std::hash::{Hash, Hasher};
+    img.width.hash(&mut hasher);
+    img.height.hash(&mut hasher);
+    img.bytes.hash(&mut hasher);
+    let name = format!("{:016x}.png", hasher.finish());
+    let path = dir.join(&name);
+
+    if !path.exists() {
+        let buf = image::RgbaImage::from_raw(
+            img.width as u32,
+            img.height as u32,
+            img.bytes.to_vec(),
+        )?;
+        buf.save_with_format(&path, image::ImageFormat::Png).ok()?;
+    }
+    Some(path.to_string_lossy().into_owned())
 }
 
