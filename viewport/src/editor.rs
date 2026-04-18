@@ -646,7 +646,7 @@ impl EditorState {
         self.computed_images.retain(|img| !block_ids.contains(&img.anchor.block_id));
 
         let mut new_srcs: Vec<(Anchor, String, String)> = Vec::new();
-        for &(start, block_id) in boundaries {
+        for &(_start, block_id) in boundaries {
             let block = match self.registry.get(&block_id) {
                 Some(b) => b,
                 None => continue,

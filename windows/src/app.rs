@@ -1,4 +1,4 @@
-use std::ffi::{c_void, CString};
+use std::ffi::CString;
 
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
@@ -22,9 +22,10 @@ pub struct App {
     window: Option<Window>,
     handle: *mut ViewportHandle,
     config: Config,
-    menu: Option<AppMenu>,
+    _menu: Option<AppMenu>,
     cursor_pos: PhysicalPosition<f64>,
     scale: f32,
+    modifiers: ModifiersState,
 }
 
 impl App {
@@ -33,9 +34,10 @@ impl App {
             window: None,
             handle: std::ptr::null_mut(),
             config: Config::load(),
-            menu: None,
+            _menu: None,
             cursor_pos: PhysicalPosition::new(0.0, 0.0),
             scale: 1.0,
+            modifiers: ModifiersState::empty(),
         }
     }
 
@@ -178,7 +180,7 @@ impl ApplicationHandler for App {
                 unsafe { app_menu.menu.init_for_hwnd(h.hwnd.get()).ok(); }
             }
         }
-        self.menu = Some(app_menu);
+        self._menu = Some(app_menu);
         self.window = Some(window);
     }
 
@@ -252,20 +254,15 @@ impl ApplicationHandler for App {
                     .unwrap_or(std::ptr::null());
 
                 let keycode = winit_key_to_code(&event.logical_key);
-                let modifiers = if let Some(w) = &self.window {
-                    // No direct modifier query on winit 0.30 Window.
-                    // Modifiers come via ModifiersChanged. We track them.
-                    0u32
-                } else {
-                    0u32
-                };
+                let mod_flags = encode_modifiers(self.modifiers);
 
                 acord_viewport::viewport_key_event(
-                    self.handle, keycode, modifiers, pressed, text_ptr,
+                    self.handle, keycode, mod_flags, pressed, text_ptr,
                 );
             }
 
             WindowEvent::ModifiersChanged(mods) => {
+                self.modifiers = mods.state();
                 if !self.handle.is_null() {
                     let state = mods.state();
                     let h = unsafe { &mut *self.handle };

@@ -1,10 +1,13 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+#[allow(dead_code)]
 pub struct Config {
     path: PathBuf,
     data: HashMap<String, String>,
 }
+
+#[allow(dead_code)]
 
 impl Config {
     pub fn load() -> Self {

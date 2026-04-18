@@ -2,6 +2,7 @@ use muda::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu, accelerator::
 use muda::accelerator::{Code, Modifiers};
 
 pub struct AppMenu {
+    #[allow(dead_code)]
     pub menu: Menu,
 }
 

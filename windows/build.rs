@@ -1,13 +1,12 @@
-use std::process::Command;
-
 fn main() {
     #[cfg(target_os = "windows")]
     {
+        use std::process::Command;
+
         let svg = "../assets/Acord.svg";
         let ico = "icon.ico";
         let tmp = "icon_tmp";
 
-        // Only regenerate on release builds or when the SVG changes.
         println!("cargo:rerun-if-changed={svg}");
 
         let _ = std::fs::create_dir_all(tmp);
@@ -23,7 +22,7 @@ fn main() {
                 .map(|s| s.success())
                 .unwrap_or(false);
             if !ok {
-                eprintln!("cargo:warning=rsvg-convert failed for {size}px — skipping icon embed");
+                eprintln!("cargo:warning=rsvg-convert not found or failed — building without icon");
                 let _ = std::fs::remove_dir_all(tmp);
                 return;
             }
@@ -40,12 +39,14 @@ fn main() {
         let _ = std::fs::remove_dir_all(tmp);
 
         if !ok {
-            eprintln!("cargo:warning=magick ico conversion failed — skipping icon embed");
+            eprintln!("cargo:warning=magick (ImageMagick) not found — building without icon");
             return;
         }
 
         let mut res = winres::WindowsResource::new();
         res.set_icon(ico);
-        res.compile().expect("winres icon embed");
+        if let Err(e) = res.compile() {
+            eprintln!("cargo:warning=winres failed: {e} — building without icon");
+        }
     }
 }

@@ -1,3 +1,6 @@
+// Hide the console window on release builds.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod app;
 mod config;
 mod menu;
