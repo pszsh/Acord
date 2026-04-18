@@ -7,8 +7,8 @@ edition = "2024"
 crate-type = ["rlib"]
 
 [dependencies]
-cord-expr = { path = "../../Cord/crates/cord-expr" }
-cord-trig = { path = "../../Cord/crates/cord-trig" }
+cord-expr = { git = "https://git.else-if.org/jess/Cord.git", package = "cord-expr" }
+cord-trig = { git = "https://git.else-if.org/jess/Cord.git", package = "cord-trig" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
