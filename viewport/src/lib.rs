@@ -48,6 +48,29 @@ pub struct ViewportHandle {
     pub needs_redraw: bool,
 }
 
+/// Install a panic hook that flushes a full backtrace to stderr before
+/// the process aborts. Called once on first viewport_create. Without this
+/// the host (Swift / winit) often eats the panic message and the user sees
+/// only a silent SIGABRT with no `.ips` file.
+fn install_panic_hook() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let prior = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            use std::io::Write;
+            let mut err = std::io::stderr().lock();
+            let _ = writeln!(err, "===== ACORD RUST PANIC =====");
+            let _ = writeln!(err, "{}", info);
+            let bt = std::backtrace::Backtrace::force_capture();
+            let _ = writeln!(err, "{}", bt);
+            let _ = writeln!(err, "============================");
+            let _ = err.flush();
+            prior(info);
+        }));
+    });
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn viewport_create(
     nsview: *mut c_void,
@@ -55,6 +78,7 @@ pub extern "C" fn viewport_create(
     height: f32,
     scale: f32,
 ) -> *mut ViewportHandle {
+    install_panic_hook();
     if nsview.is_null() {
         return std::ptr::null_mut();
     }

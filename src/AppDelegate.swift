@@ -32,6 +32,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// eval overlay. By writing straight to disk, autosave can't disturb
     /// what the user sees.
     private var autosaveTimer: Timer?
+    /// Hash of the viewport text the last time autosave actually wrote to
+    /// disk. The 100ms timer compares against this and skips the write if
+    /// nothing has changed — without this gate, autosave rewrites the
+    /// entire file every tick (~500 KB/s sustained on a 50 KB doc, which
+    /// macOS flags as a disk-writes throttle event).
+    private var lastAutosavedHash: Int?
 
     private var viewport: IcedViewportView? {
         window?.contentView as? IcedViewportView
@@ -719,7 +725,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         guard let w = window, let vp = w.contentView as? IcedViewportView else { return }
         let text = vp.getText()
         guard !AppState.isEffectivelyBlank(text) else { return }
+        let hash = text.hashValue
+        if hash == lastAutosavedHash { return }
         appState.writeAutosavedCopy(text: text)
+        lastAutosavedHash = hash
     }
 
     private func observeDocumentTitle() {
