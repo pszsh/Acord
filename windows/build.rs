@@ -1,8 +1,6 @@
 fn main() {
     #[cfg(target_os = "windows")]
     {
-        use std::process::Command;
-
         let svg = "../assets/Acord.svg";
         let ico = "icon.ico";
         let rc = "icon.rc";
