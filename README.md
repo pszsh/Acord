@@ -1,5 +1,33 @@
 # Acord
 
+
+## Quickstart MacOS
+
+- Download a pre-compiled binary from [Releases](.././../releases)
+
+- To build, install/update/replace the release binary which will be propogated into your Applications folder, execute this script:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+DEST="/Applications/Acord.app"
+
+echo "Building release..."
+"$ROOT/build.sh"
+
+# Kill running instance before replacing
+pkill -f "Acord.app/Contents/MacOS/Acord" 2>/dev/null || true
+sleep 0.5
+
+echo "Installing to $DEST..."
+rm -rf "$DEST"
+cp -R "$ROOT/build/bin/Acord.app" "$DEST"
+
+echo "Installed: $DEST"
+```
+
 Here's the 'sales' pitch:
 
 "Hi there, do you enjoy casually solving project euler problems and are tired of using the spotlight bar as your primary calculator?" - Then this might be your kinda thing.
@@ -63,12 +91,12 @@ Tables work the way you'd expect from Numbers or Excel: cells, formulas, ranges,
 
 ## Where to start
 
-- **Install** [Install](Install) → [First Note](First-Note)
-- **Cordial Language** [Cordial Quickstart](Cordial-Quickstart) → [Cordial Reference](Cordial-Reference)
-  - [Tables and formulas](Cordial-Tables)
-  - [SPICE notation for engineering values](Cordial-SPICE)
-  - [solve! for inverting functions](Cordial-solve)
-  - [Architecture](Architecture) → [Contributing](Contributing)
+- **Install** [Install](../../../wiki/Install) → [First Note](../../../wiki/First-Note)
+- **Cordial Language** [Cordial Quickstart](../../../wiki/Cordial-Quickstart) → [Cordial Reference](../../../wiki/Cordial-Reference)
+  - [Tables and formulas](../../../wiki/Cordial-Tables)
+  - [SPICE notation for engineering values](../../../wiki/Cordial-SPICE)
+  - [solve! for inverting functions](../../../wiki/Cordial-solve)
+  - [Architecture](../../../wiki/Architecture) → [Contributing](../../../wiki/Contributing)
 
 ## Status
 
