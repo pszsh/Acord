@@ -5,10 +5,12 @@ fn main() {
 
         let svg = "../assets/Acord.svg";
         let ico = "icon.ico";
+        let rc = "icon.rc";
         let tmp = "icon_tmp";
 
         println!("cargo:rerun-if-changed={svg}");
 
+        // Generate icon.ico from SVG via rsvg-convert + magick.
         let _ = std::fs::create_dir_all(tmp);
         let sizes = [16, 24, 32, 48, 64, 128, 256];
         let mut pngs = Vec::new();
@@ -22,7 +24,7 @@ fn main() {
                 .map(|s| s.success())
                 .unwrap_or(false);
             if !ok {
-                eprintln!("cargo:warning=rsvg-convert not found or failed — building without icon");
+                println!("cargo:warning=rsvg-convert not found or failed — building without icon");
                 let _ = std::fs::remove_dir_all(tmp);
                 return;
             }
@@ -39,16 +41,13 @@ fn main() {
         let _ = std::fs::remove_dir_all(tmp);
 
         if !ok {
-            eprintln!("cargo:warning=magick (ImageMagick) not found — building without icon");
+            println!("cargo:warning=magick (ImageMagick) not found — building without icon");
             return;
         }
 
-        println!("cargo:warning=icon.ico generated, embedding via winres...");
-        let mut res = winres::WindowsResource::new();
-        res.set_icon(ico);
-        match res.compile() {
-            Ok(_) => println!("cargo:warning=icon embedded successfully"),
-            Err(e) => eprintln!("cargo:warning=winres failed: {e} — building without icon"),
-        }
+        // Write a .rc file and embed via embed-resource (supports LLVM/GNU toolchains).
+        std::fs::write(rc, "1 ICON \"icon.ico\"\n").ok();
+        embed_resource::compile(rc, embed_resource::NONE);
+        println!("cargo:warning=icon embedded successfully");
     }
 }
