@@ -154,9 +154,16 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() { return; }
 
-        let attrs = WindowAttributes::default()
+        let mut attrs = WindowAttributes::default()
             .with_title("Acord")
             .with_inner_size(LogicalSize::new(1100.0, 750.0));
+
+        // Load window icon from the bundled PNG (rasterized from SVG at build
+        // time or shipped alongside the exe). Falls back to no icon silently.
+        if let Some(icon) = load_window_icon() {
+            attrs = attrs.with_window_icon(Some(icon));
+        }
+
         let window = event_loop.create_window(attrs).expect("create window");
         self.scale = window.scale_factor() as f32;
 
@@ -362,4 +369,37 @@ fn decode_winit_modifiers(state: ModifiersState) -> iced_wgpu::core::keyboard::M
     // Map Ctrl to LOGO so iced's Cmd+C/V/X bindings work via Ctrl on Windows.
     if state.control_key() { m |= iced_wgpu::core::keyboard::Modifiers::LOGO; }
     m
+}
+
+/// Load the app icon from `assets/Acord.svg` (relative to exe) or a
+/// pre-rasterized PNG next to the exe. Returns None on any failure.
+fn load_window_icon() -> Option<winit::window::Icon> {
+    // Try loading a PNG icon next to the exe first.
+    let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+
+    // Try pre-rasterized icon.png next to exe.
+    let png_path = exe_dir.join("icon.png");
+    let bytes = if png_path.exists() {
+        std::fs::read(&png_path).ok()?
+    } else {
+        // Fall back to the SVG in the assets dir (repo layout).
+        let svg_path = exe_dir.join("../assets/Acord.svg")
+            .canonicalize().ok()
+            .or_else(|| {
+                // Running from repo root via cargo run.
+                std::path::PathBuf::from("assets/Acord.svg").canonicalize().ok()
+            })?;
+        // Use rsvg-convert at runtime as a fallback.
+        let output = std::process::Command::new("rsvg-convert")
+            .args(["--width", "256", "--height", "256"])
+            .arg(&svg_path)
+            .output()
+            .ok()?;
+        if !output.status.success() { return None; }
+        output.stdout
+    };
+
+    let img = image::load_from_memory(&bytes).ok()?.into_rgba8();
+    let (w, h) = img.dimensions();
+    winit::window::Icon::from_rgba(img.into_raw(), w, h).ok()
 }
