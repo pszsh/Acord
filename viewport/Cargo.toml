@@ -11,7 +11,9 @@ acord-core = { path = "../core" }
 iced_wgpu = "0.14"
 iced_graphics = "0.14"
 iced_runtime = "0.14"
-iced_widget = { version = "0.14", features = ["wgpu", "markdown", "canvas"] }
+iced_widget = { version = "0.14", features = ["wgpu", "markdown", "canvas", "image"] }
+image = "0.25"
+dirs = "6"
 wgpu = "27"
 raw-window-handle = "0.6"
 pollster = "0.4"

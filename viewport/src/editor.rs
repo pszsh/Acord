@@ -221,11 +221,34 @@ impl ComputedTree {
     }
 }
 
+/// Layer 4: embedded image from `![alt](src)`.
+#[derive(Debug, Clone)]
+pub struct ComputedImage {
+    pub anchor: Anchor,
+    pub src: String,
+    pub alt: String,
+    /// Pre-computed display height based on image aspect ratio and editor
+    /// width. Falls back to a placeholder height while loading.
+    pub display_height: f32,
+}
+
+/// Cached image data keyed by source path/URL.
+pub struct ImageCacheEntry {
+    pub bytes: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
+const IMAGE_PLACEHOLDER_H: f32 = 24.0;
+const IMAGE_MAX_H: f32 = 600.0;
+const IMAGE_PADDING: f32 = 48.0;
+
 /// Ref to a layer item for interleaved rendering.
 enum LayerItem<'a> {
     Inline(&'a InlineResult),
     Table(&'a ComputedTable),
     Tree(&'a ComputedTree),
+    Image(&'a ComputedImage),
 }
 
 impl LayerItem<'_> {
@@ -234,6 +257,7 @@ impl LayerItem<'_> {
             Self::Inline(r) => r.element_height(line_h),
             Self::Table(t) => t.element_height(line_h),
             Self::Tree(t) => t.element_height(font_size),
+            Self::Image(img) => img.display_height,
         }
     }
 }
@@ -382,6 +406,10 @@ pub struct EditorState {
     /// the shell drains it after each frame via `viewport_take_clipboard`
     /// and pushes the text to the system clipboard.
     pub pending_clipboard: Option<String>,
+
+    // ── Images ──
+    pub computed_images: Vec<ComputedImage>,
+    pub image_cache: HashMap<String, ImageCacheEntry>,
 }
 
 /// Per-eval table name→id bookkeeping. `keys` is every alias a table is
@@ -495,6 +523,8 @@ impl EditorState {
             line_indicator: LineIndicator::On,
             gutter_rainbow: true,
             pending_clipboard: None,
+            computed_images: Vec::new(),
+            image_cache: HashMap::new(),
         }
     }
 
@@ -579,6 +609,7 @@ impl EditorState {
         self.eval_results.retain(|r| !ids.contains(&r.anchor.block_id));
         self.computed_tables.retain(|t| !ids.contains(&t.anchor.block_id));
         self.computed_trees.retain(|t| !ids.contains(&t.anchor.block_id));
+        self.computed_images.retain(|img| !ids.contains(&img.anchor.block_id));
     }
 
     /// Map a line number in concatenated module source back to a per-block anchor.
@@ -600,6 +631,63 @@ impl EditorState {
         Anchor {
             block_id: best_id,
             after_line: global_line - best_start,
+        }
+    }
+
+    /// Scan text blocks for `![alt](src)` image references and populate
+    /// `computed_images`. Loads image bytes into `image_cache` on first
+    /// encounter (sync for local files). Replaces previous images for the
+    /// given block set — unchanged sources keep their cache entry.
+    fn scan_images(
+        &mut self,
+        boundaries: &[(usize, crate::selection::BlockId)],
+        block_ids: &[crate::selection::BlockId],
+    ) {
+        self.computed_images.retain(|img| !block_ids.contains(&img.anchor.block_id));
+
+        let mut new_srcs: Vec<(Anchor, String, String)> = Vec::new();
+        for &(start, block_id) in boundaries {
+            let block = match self.registry.get(&block_id) {
+                Some(b) => b,
+                None => continue,
+            };
+            let text = if let Some(tb) = block.as_any().downcast_ref::<TextBlock>() {
+                tb.content.text()
+            } else {
+                continue;
+            };
+            for (line_idx, line) in text.lines().enumerate() {
+                if let Some((alt, src)) = parse_image_ref(line) {
+                    let anchor = Anchor { block_id, after_line: line_idx };
+                    new_srcs.push((anchor, src, alt));
+                }
+            }
+        }
+
+        // Editor width estimate for aspect-ratio scaling.
+        let editor_w = 800.0f32; // approximate; TODO: pass actual width
+
+        for (anchor, src, alt) in new_srcs {
+            // Load into cache if absent.
+            if !self.image_cache.contains_key(&src) {
+                if let Some(entry) = load_image_from_path(&src) {
+                    self.image_cache.insert(src.clone(), entry);
+                }
+            }
+            let display_height = if let Some(entry) = self.image_cache.get(&src) {
+                let max_w = (editor_w - IMAGE_PADDING).max(1.0);
+                let scale_w = max_w.min(entry.width as f32);
+                let aspect = entry.height as f32 / entry.width.max(1) as f32;
+                (scale_w * aspect).min(IMAGE_MAX_H)
+            } else {
+                IMAGE_PLACEHOLDER_H
+            };
+            self.computed_images.push(ComputedImage {
+                anchor,
+                src,
+                alt,
+                display_height,
+            });
         }
     }
 
@@ -1934,6 +2022,9 @@ impl EditorState {
             }
         }
         let source = source_parts.join("\n");
+
+        // Image scan runs regardless of eval content.
+        self.scan_images(&boundaries, &block_ids);
 
         let has_text_eval = source.lines().any(|l| l.trim_start().starts_with("/="));
         let has_cell_formulas = self.any_visible_cell_formulas();
@@ -3536,6 +3627,11 @@ impl EditorState {
                 items.push((ct.anchor.after_line, LayerItem::Tree(ct)));
             }
         }
+        for img in &self.computed_images {
+            if img.anchor.block_id == block_id {
+                items.push((img.anchor.after_line, LayerItem::Image(img)));
+            }
+        }
         items.sort_by_key(|(line, _)| *line);
         items
     }
@@ -3628,6 +3724,36 @@ impl EditorState {
                 }
                 LayerItem::Tree(ct) => {
                     let el = crate::tree_block::build(&ct.data, self.font_size);
+                    anchored.push(AnchoredItem {
+                        after_line: *after_line,
+                        height: item.element_height(lh, self.font_size),
+                        element: el,
+                    });
+                }
+                LayerItem::Image(img) => {
+                    let el: Element<'a, Message, Theme, iced_wgpu::Renderer> =
+                        if let Some(entry) = self.image_cache.get(&img.src) {
+                            let handle = iced_widget::image::Handle::from_bytes(entry.bytes.clone());
+                            iced_widget::container(
+                                iced_widget::image(handle)
+                                    .width(Length::Fill)
+                                    .height(Length::Fixed(img.display_height))
+                            )
+                            .padding(Padding { top: 4.0, right: 8.0, bottom: 4.0, left: 40.0 })
+                            .width(Length::Fill)
+                            .into()
+                        } else {
+                            // Placeholder while loading or on failure.
+                            iced_widget::container(
+                                iced_widget::text(format!("[image: {}]", img.alt))
+                                    .font(syntax::EDITOR_FONT)
+                                    .size(self.font_size)
+                                    .color(p.overlay0)
+                            )
+                            .padding(Padding { top: 0.0, right: 8.0, bottom: 0.0, left: 40.0 })
+                            .width(Length::Fill)
+                            .into()
+                        };
                     anchored.push(AnchoredItem {
                         after_line: *after_line,
                         height: item.element_height(lh, self.font_size),
@@ -4278,5 +4404,44 @@ fn detect_lang_from_content(text: &str) -> Option<String> {
 fn leading_whitespace(line: &str) -> &str {
     let end = line.len() - line.trim_start().len();
     &line[..end]
+}
+
+/// Parse a markdown image reference `![alt](src)` from a line. Returns
+/// `(alt, src)` if found. Only matches if the `![` is the first
+/// non-whitespace on the line (inline images inside text are not rendered
+/// as block-level anchored items).
+fn parse_image_ref(line: &str) -> Option<(String, String)> {
+    let trimmed = line.trim_start();
+    if !trimmed.starts_with("![") { return None; }
+    let after_bang = &trimmed[2..];
+    let close_bracket = after_bang.find(']')?;
+    let alt = after_bang[..close_bracket].to_string();
+    let rest = &after_bang[close_bracket + 1..];
+    if !rest.starts_with('(') { return None; }
+    let close_paren = rest.find(')')?;
+    let src = rest[1..close_paren].trim().to_string();
+    if src.is_empty() { return None; }
+    Some((alt, src))
+}
+
+/// Load an image from a local filesystem path into an `ImageCacheEntry`.
+/// Returns `None` on any failure (missing file, corrupt image, etc.).
+fn load_image_from_path(src: &str) -> Option<ImageCacheEntry> {
+    // Expand ~ to home directory.
+    let path = if src.starts_with("~/") {
+        dirs::home_dir()?.join(&src[2..])
+    } else {
+        std::path::PathBuf::from(src)
+    };
+    let bytes = std::fs::read(&path).ok()?;
+    let reader = image::ImageReader::new(std::io::Cursor::new(&bytes))
+        .with_guessed_format()
+        .ok()?;
+    let dims = reader.into_dimensions().ok()?;
+    Some(ImageCacheEntry {
+        bytes,
+        width: dims.0,
+        height: dims.1,
+    })
 }
 
