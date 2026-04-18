@@ -232,9 +232,10 @@ pub struct ComputedImage {
     pub display_height: f32,
 }
 
-/// Cached image data keyed by source path/URL.
+/// Cached image data keyed by source path/URL. Handle must be built once
+/// and reused — `Handle::from_bytes` mints a fresh Id every call.
 pub struct ImageCacheEntry {
-    pub bytes: Vec<u8>,
+    pub handle: iced_widget::image::Handle,
     pub width: u32,
     pub height: u32,
 }
@@ -242,6 +243,7 @@ pub struct ImageCacheEntry {
 const IMAGE_PLACEHOLDER_H: f32 = 24.0;
 const IMAGE_MAX_H: f32 = 600.0;
 const IMAGE_PADDING: f32 = 48.0;
+const IMAGE_VPAD: f32 = 4.0;
 
 /// Ref to a layer item for interleaved rendering.
 enum LayerItem<'a> {
@@ -257,7 +259,7 @@ impl LayerItem<'_> {
             Self::Inline(r) => r.element_height(line_h),
             Self::Table(t) => t.element_height(line_h),
             Self::Tree(t) => t.element_height(font_size),
-            Self::Image(img) => img.display_height,
+            Self::Image(img) => img.display_height + IMAGE_VPAD * 2.0,
         }
     }
 }
@@ -1109,34 +1111,45 @@ impl EditorState {
     /// pure plain `.md`. Used by the FFI `viewport_get_text` entrypoint.
     pub fn save_doc(&mut self) -> String {
         let body = self.get_clean_text();
+        // build_block_files reads self.modules; make sure it reflects the
+        // current document. rebuild_modules is idempotent and cheap.
+        self.rebuild_modules();
         let sidecar = self.build_sidecar();
         let block_files = self.build_block_files();
         sidecar::embed_archive(&body, &sidecar, &block_files)
     }
 
-    /// Build the per-block source files for the archive. Each block gets a
-    /// `.cord` file containing TOML front-matter + `---` separator + source.
-    /// Filenames derive from the block's heading when available (snake_case),
-    /// else `block_N` (N = positional index). Heading blocks name themselves;
-    /// other blocks inherit the name of a preceding H3/H4 heading if one sits
-    /// directly above. Collisions get `_2`, `_3`, ... suffixes.
+    /// Build the per-block source files for the archive. One `.cord` file
+    /// per logical block — a logical block is a group of parser spans
+    /// bounded by H1/H2 headings or `---` (the same grouping `self.modules`
+    /// already maintains for `use`-resolution). Tables and prose are not
+    /// boundaries; they live inside whichever block contains them.
+    ///
+    /// Filename: heading-led blocks get `<snake_name>.cord`; HR-led
+    /// (anonymous) blocks get `block_N.cord` where N is the positional
+    /// index across all logical blocks (0-based). Collisions get `_2`,
+    /// `_3`, … suffixes.
     pub fn build_block_files(&self) -> Vec<sidecar::BlockFile> {
         use std::collections::HashSet;
-        let mut files = Vec::with_capacity(self.layout.len());
+        let mut files = Vec::with_capacity(self.modules.len());
         let mut used: HashSet<String> = HashSet::new();
 
-        for (index, block_id) in self.layout.iter().enumerate() {
-            let Some(block) = self.registry.get(block_id) else { continue };
-            let kind = block.kind_tag();
-            let source = block.to_md();
+        for (index, module) in self.modules.iter().enumerate() {
+            let mut source_parts: Vec<String> = Vec::with_capacity(module.block_ids.len());
+            let mut title = String::new();
+            for &bid in &module.block_ids {
+                let Some(block) = self.registry.get(&bid) else { continue };
+                if title.is_empty() {
+                    if let Some(hb) = block.as_any().downcast_ref::<HeadingBlock>() {
+                        title = hb.text.clone();
+                    }
+                }
+                source_parts.push(block.to_md());
+            }
+            let source = source_parts.join("\n");
 
-            let derived = self.derive_block_name(index, block);
-            let filename = self.unique_cord_filename(derived, index, &mut used);
-
-            let title = match block.as_any().downcast_ref::<HeadingBlock>() {
-                Some(hb) => hb.text.clone(),
-                None => String::new(),
-            };
+            let kind = if module.heading_block.is_some() { "section" } else { "anonymous" };
+            let filename = self.unique_cord_filename(&module.name, index, &mut used);
             let content = format!(
                 "---\nkind = \"{}\"\nindex = {}\ntitle = \"{}\"\n---\n{}",
                 kind,
@@ -1149,57 +1162,17 @@ impl EditorState {
         files
     }
 
-    /// Derive a semantic filename stem for a block, or None for positional.
-    fn derive_block_name(&self, index: usize, block: &BoxedBlock) -> Option<String> {
-        // A heading block names itself.
-        if let Some(hb) = block.as_any().downcast_ref::<HeadingBlock>() {
-            let name = crate::module::normalize_name(&hb.text);
-            if !name.is_empty() {
-                return Some(name);
-            }
-        }
-        // Otherwise look for a preceding H3/H4 heading (skipping blank text).
-        let mut j = index;
-        while j > 0 {
-            j -= 1;
-            let Some(prev_id) = self.layout.get(j) else { break };
-            let Some(prev) = self.registry.get(prev_id) else { break };
-            match prev.kind_tag() {
-                "heading" => {
-                    if let Some(hb) = prev.as_any().downcast_ref::<HeadingBlock>() {
-                        use crate::heading_block::HeadingLevel;
-                        if matches!(hb.level, HeadingLevel::H3 | HeadingLevel::H4) {
-                            let name = crate::module::normalize_name(&hb.text);
-                            if !name.is_empty() {
-                                return Some(name);
-                            }
-                        }
-                    }
-                    break;
-                }
-                "text" => {
-                    if let Some(tb) = prev.as_any().downcast_ref::<TextBlock>() {
-                        if !tb.content.text().trim().is_empty() {
-                            break;
-                        }
-                        // empty text block — keep walking back
-                        continue;
-                    }
-                    break;
-                }
-                _ => break,
-            }
-        }
-        None
-    }
-
     fn unique_cord_filename(
         &self,
-        derived: Option<String>,
+        module_name: &str,
         index: usize,
         used: &mut std::collections::HashSet<String>,
     ) -> String {
-        let base = derived.unwrap_or_else(|| format!("block_{}", index));
+        let base = if module_name.is_empty() {
+            format!("block_{}", index)
+        } else {
+            module_name.to_string()
+        };
         let mut candidate = format!("{}.cord", base);
         let mut n = 2;
         while used.contains(&candidate) {
@@ -3732,13 +3705,12 @@ impl EditorState {
                 LayerItem::Image(img) => {
                     let el: Element<'a, Message, Theme, iced_wgpu::Renderer> =
                         if let Some(entry) = self.image_cache.get(&img.src) {
-                            let handle = iced_widget::image::Handle::from_bytes(entry.bytes.clone());
                             iced_widget::container(
-                                iced_widget::image(handle)
+                                iced_widget::image(entry.handle.clone())
                                     .width(Length::Fill)
                                     .height(Length::Fixed(img.display_height))
                             )
-                            .padding(Padding { top: 4.0, right: 8.0, bottom: 4.0, left: 40.0 })
+                            .padding(Padding { top: IMAGE_VPAD, right: 8.0, bottom: IMAGE_VPAD, left: 40.0 })
                             .width(Length::Fill)
                             .into()
                         } else {
@@ -4423,13 +4395,10 @@ fn parse_image_ref(line: &str) -> Option<(String, String)> {
     Some((alt, src))
 }
 
-/// Load an image into an `ImageCacheEntry`. Accepts:
-/// - `http://` / `https://` URLs (5s timeout, blocking — guarded by the
-///   per-source cache so the stall only happens on first load).
-/// - `~/`-prefixed paths (expanded against the home directory).
-/// - Absolute or relative filesystem paths.
+/// Load an image. `src` may be `http(s)://`, `~/…`, or a filesystem path.
+/// Result is always PNG bytes regardless of source format.
 fn load_image_from_path(src: &str) -> Option<ImageCacheEntry> {
-    let bytes = if src.starts_with("http://") || src.starts_with("https://") {
+    let raw = if src.starts_with("http://") || src.starts_with("https://") {
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_global(Some(std::time::Duration::from_secs(5)))
             .build()
@@ -4444,15 +4413,12 @@ fn load_image_from_path(src: &str) -> Option<ImageCacheEntry> {
         };
         std::fs::read(&path).ok()?
     };
-    let reader = image::ImageReader::new(std::io::Cursor::new(&bytes))
-        .with_guessed_format()
-        .ok()?;
-    let dims = reader.into_dimensions().ok()?;
-    Some(ImageCacheEntry {
-        bytes,
-        width: dims.0,
-        height: dims.1,
-    })
+    let img = image::load_from_memory(&raw).ok()?;
+    let (width, height) = (img.width(), img.height());
+    let rgba = img.into_rgba8();
+    let pixels = rgba.into_raw();
+    let handle = iced_widget::image::Handle::from_rgba(width, height, pixels);
+    Some(ImageCacheEntry { handle, width, height })
 }
 
 /// Encode a clipboard image (RGBA from `arboard`) to PNG and write it into
