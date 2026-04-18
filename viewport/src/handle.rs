@@ -66,7 +66,7 @@ pub fn create(
     );
     #[cfg(target_os = "windows")]
     let (raw_window, raw_display) = {
-        let mut wh = Win32WindowHandle::new(std::num::NonZero::new(ptr.as_ptr() as isize).unwrap());
+        let wh = Win32WindowHandle::new(std::num::NonZero::new(ptr.as_ptr() as isize).unwrap());
         (
             RawWindowHandle::Win32(wh),
             RawDisplayHandle::Windows(WindowsDisplayHandle::new()),

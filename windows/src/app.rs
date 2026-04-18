@@ -11,8 +11,8 @@ use acord_viewport::{
     viewport_create, viewport_destroy, viewport_render, viewport_resize,
     viewport_set_text, viewport_get_text, viewport_set_theme, viewport_set_lang,
     viewport_set_line_indicator, viewport_set_gutter_rainbow,
-    viewport_send_command, viewport_free_string, viewport_render_mode,
-    viewport_export_crate, ViewportHandle,
+    viewport_send_command, viewport_free_string,
+    ViewportHandle,
 };
 
 use crate::config::Config;
@@ -174,12 +174,8 @@ impl ApplicationHandler for App {
         let app_menu = AppMenu::new();
         #[cfg(target_os = "windows")]
         {
-            use raw_window_handle::HasWindowHandle;
-            if let Ok(wh) = window.window_handle() {
-                if let raw_window_handle::RawWindowHandle::Win32(h) = wh.as_raw() {
-                    use winapi::shared::windef::HWND;
-                    app_menu.menu.init_for_hwnd(h.hwnd.get() as HWND).ok();
-                }
+            if let raw_window_handle::RawWindowHandle::Win32(h) = raw {
+                unsafe { app_menu.menu.init_for_hwnd(h.hwnd.get()).ok(); }
             }
         }
         self.menu = Some(app_menu);
