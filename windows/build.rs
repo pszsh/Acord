@@ -43,10 +43,12 @@ fn main() {
             return;
         }
 
+        println!("cargo:warning=icon.ico generated, embedding via winres...");
         let mut res = winres::WindowsResource::new();
         res.set_icon(ico);
-        if let Err(e) = res.compile() {
-            eprintln!("cargo:warning=winres failed: {e} — building without icon");
+        match res.compile() {
+            Ok(_) => println!("cargo:warning=icon embedded successfully"),
+            Err(e) => eprintln!("cargo:warning=winres failed: {e} — building without icon"),
         }
     }
 }
