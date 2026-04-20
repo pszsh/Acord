@@ -107,6 +107,9 @@ pub enum TableMessage {
     BeginColReorder(usize),
     BeginRowReorder(usize),
     EndDrag,
+    /// Click on a column-header sort arrow: cycles that column through
+    /// Neutral → Asc → Desc → Neutral and re-applies the composite sort.
+    CycleSort(usize),
 }
 
 /// Trait-implementing block for tables. Owns all the per-table mutable state
@@ -163,7 +166,14 @@ pub struct TableBlock {
     pub drag_select_baseline: std::collections::HashSet<(usize, usize)>,
     pub last_cursor_x: f32,
     pub last_cursor_y: f32,
+    /// Composite sort. Each entry is `(col_idx, dir)`. The first entry is
+    /// the dominant sort key; later entries break ties within groups of
+    /// equal dominant values. Empty = no sort active (visual neutral).
+    pub sort_priority: Vec<(usize, SortDir)>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortDir { Asc, Desc }
 
 impl TableBlock {
     pub fn new(id: BlockId, rows: Vec<Vec<String>>, start_line: usize) -> Self {
@@ -223,7 +233,51 @@ impl TableBlock {
             drag_select_baseline: std::collections::HashSet::new(),
             last_cursor_x: 0.0,
             last_cursor_y: 0.0,
+            sort_priority: Vec::new(),
         }
+    }
+
+    /// Cycle the sort state of `col`: Neutral → Asc → Desc → Neutral.
+    /// First click on a previously-neutral column appends it to the
+    /// END of the priority list (least dominant). Re-clicking advances
+    /// its direction in place; the third click removes it.
+    pub fn cycle_sort(&mut self, col: usize) {
+        if let Some(idx) = self.sort_priority.iter().position(|(c, _)| *c == col) {
+            match self.sort_priority[idx].1 {
+                SortDir::Asc => self.sort_priority[idx].1 = SortDir::Desc,
+                SortDir::Desc => { self.sort_priority.remove(idx); }
+            }
+        } else {
+            self.sort_priority.push((col, SortDir::Asc));
+        }
+        self.apply_sort();
+    }
+
+    /// Sort state for a column, if any. Used by the header chrome to pick
+    /// the arrow tint and the optional precedence badge.
+    pub fn sort_state_for(&self, col: usize) -> Option<(SortDir, usize)> {
+        self.sort_priority.iter().enumerate().find_map(|(i, (c, d))| {
+            if *c == col { Some((*d, i)) } else { None }
+        })
+    }
+
+    /// Apply the composite sort to the data rows (everything below row 0,
+    /// which is the header). Stable across equal keys so existing intra-
+    /// group order is preserved.
+    pub fn apply_sort(&mut self) {
+        if self.sort_priority.is_empty() || self.rows.len() <= 2 { return; }
+        let priority = self.sort_priority.clone();
+        let (_, tail) = self.rows.split_at_mut(1);
+        tail.sort_by(|a, b| {
+            for (col, dir) in &priority {
+                let av = a.get(*col).map(|s| s.as_str()).unwrap_or("");
+                let bv = b.get(*col).map(|s| s.as_str()).unwrap_or("");
+                let ord = compare_alphanumeric(av, bv);
+                let ord = if *dir == SortDir::Desc { ord.reverse() } else { ord };
+                if ord != std::cmp::Ordering::Equal { return ord; }
+            }
+            std::cmp::Ordering::Equal
+        });
     }
 
     pub fn col_count(&self) -> usize {
@@ -598,6 +652,12 @@ impl TableBlock {
                     target: row,
                     start_y: self.last_cursor_y,
                 });
+            }
+            TableMessage::CycleSort(col) => {
+                if self.read_only || col >= self.col_widths.len() {
+                    return;
+                }
+                self.cycle_sort(col);
             }
             TableMessage::EndDrag => {
                 self.resize_drag = None;
@@ -1053,29 +1113,67 @@ where
             } else {
                 None
             };
-            let letter_container = container(
-                text(letter)
-                    .size(chrome_font)
+            let sort_state = block.sort_state_for(ci);
+            let arrow_color = |active: bool| -> Color {
+                if active { p.text } else { Color { a: 0.25, ..p.overlay0 } }
+            };
+            let (up_active, down_active) = match sort_state {
+                Some((SortDir::Asc, _)) => (true, false),
+                Some((SortDir::Desc, _)) => (false, true),
+                None => (false, false),
+            };
+            let arrows: Element<'a, Message, Theme, iced_wgpu::Renderer> = if chrome_active {
+                let up_glyph = text("\u{25B2}")
+                    .size(chrome_font * 0.7)
                     .font(EDITOR_FONT)
-                    .color(oklab::lighten_for_size(p.overlay0, chrome_font))
-            )
-            .width(Length::Fixed(*w))
-            .height(Length::Fixed(header_h))
-            .padding(Padding { top: 0.0, right: 0.0, bottom: 0.0, left: 6.0 })
-            .style(move |_theme: &Theme| container::Style {
-                background: bg_color.map(Background::Color),
-                border: Border::default(),
-                text_color: None,
-                shadow: Shadow::default(),
-                snap: false,
-            });
-            let letter_cell: Element<'a, Message, Theme, iced_wgpu::Renderer> = if chrome_active {
-                MouseArea::new(letter_container)
-                    .on_press(on_msg(TableMessage::BeginColReorder(ci)))
+                    .color(arrow_color(up_active));
+                let down_glyph = text("\u{25BC}")
+                    .size(chrome_font * 0.7)
+                    .font(EDITOR_FONT)
+                    .color(arrow_color(down_active));
+                let stack = iced_widget::row![up_glyph, down_glyph]
+                    .spacing(2.0)
+                    .align_y(iced_wgpu::core::Alignment::Center);
+                MouseArea::new(
+                    container(stack)
+                        .padding(Padding { top: 0.0, right: 4.0, bottom: 0.0, left: 4.0 })
+                )
+                    .on_press(on_msg(TableMessage::CycleSort(ci)))
                     .into()
             } else {
-                letter_container.into()
+                container(text("")).width(Length::Fixed(0.0)).into()
             };
+
+            let letter_inner: Element<'a, Message, Theme, iced_wgpu::Renderer> = iced_widget::row![
+                MouseArea::new(
+                    container(
+                        text(letter)
+                            .size(chrome_font)
+                            .font(EDITOR_FONT)
+                            .color(oklab::lighten_for_size(p.overlay0, chrome_font))
+                    )
+                    .width(Length::Fill)
+                    .padding(Padding { top: 0.0, right: 0.0, bottom: 0.0, left: 6.0 })
+                )
+                    .on_press(on_msg(TableMessage::BeginColReorder(ci))),
+                arrows,
+            ]
+            .spacing(0.0)
+            .align_y(iced_wgpu::core::Alignment::Center)
+            .into();
+
+            let letter_container = container(letter_inner)
+                .width(Length::Fixed(*w))
+                .height(Length::Fixed(header_h))
+                .style(move |_theme: &Theme| container::Style {
+                    background: bg_color.map(Background::Color),
+                    border: Border::default(),
+                    text_color: None,
+                    shadow: Shadow::default(),
+                    snap: false,
+                });
+            let letter_cell: Element<'a, Message, Theme, iced_wgpu::Renderer> =
+                letter_container.into();
             header_row_cells.push(letter_cell);
             header_row_cells.push(
                 container(text(""))
@@ -1340,6 +1438,48 @@ fn column_letter(mut idx: usize) -> String {
         idx = idx / 26 - 1;
     }
     s
+}
+
+/// Natural alphanumeric comparison: contiguous digit runs compare as
+/// integers so `R10` sorts after `R2`. Letter runs compare case-insensitive.
+fn compare_alphanumeric(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let mut ai = a.chars().peekable();
+    let mut bi = b.chars().peekable();
+    loop {
+        match (ai.peek(), bi.peek()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(&ca), Some(&cb)) => {
+                if ca.is_ascii_digit() && cb.is_ascii_digit() {
+                    let mut an = 0u64;
+                    let mut bn = 0u64;
+                    while let Some(&c) = ai.peek() {
+                        if !c.is_ascii_digit() { break; }
+                        an = an.saturating_mul(10) + (c as u64 - b'0' as u64);
+                        ai.next();
+                    }
+                    while let Some(&c) = bi.peek() {
+                        if !c.is_ascii_digit() { break; }
+                        bn = bn.saturating_mul(10) + (c as u64 - b'0' as u64);
+                        bi.next();
+                    }
+                    match an.cmp(&bn) {
+                        Ordering::Equal => continue,
+                        non_eq => return non_eq,
+                    }
+                } else {
+                    let la = ca.to_ascii_lowercase();
+                    let lb = cb.to_ascii_lowercase();
+                    match la.cmp(&lb) {
+                        Ordering::Equal => { ai.next(); bi.next(); continue; }
+                        non_eq => return non_eq,
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn plus_button_style(_theme: &Theme, status: button::Status) -> button::Style {

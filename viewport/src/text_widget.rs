@@ -74,42 +74,59 @@ pub struct AnchoredItem<'a, Message, Theme = iced_wgpu::core::Theme> {
     pub element: Element<'a, Message, Theme, iced_wgpu::Renderer>,
 }
 
-/// Walk the content stream (text lines + anchored items) and map widget-space y to text-space y.
-fn stream_y_to_text_y<M, T>(y: f32, items: &[AnchoredItem<'_, M, T>], line_h: f32, line_count: usize) -> f32 {
-    let mut text_y = 0.0f32;
-    let mut widget_y = 0.0f32;
-    let mut item_idx = 0;
+/// Per-logical-line metrics. Stored on State so layout publishes once
+/// and every consumer (draw, cursor, hit-test) reads the same data.
+#[derive(Clone, Default, Debug)]
+pub struct LineMetric {
+    /// Widget-y of this line's first visual row (relative to text_bounds.y).
+    pub widget_y: f32,
+    /// Cosmic-buffer y of this line's first visual row. Buffer y advances
+    /// by line_h per visual row (wrapped lines occupy multiple rows).
+    pub buffer_y: f32,
+    /// Number of visual rows this logical line occupies after wrap.
+    pub visual_rows: usize,
+}
 
-    for line in 0..line_count {
-        if y < widget_y + line_h {
-            return text_y + (y - widget_y);
-        }
-        text_y += line_h;
-        widget_y += line_h;
-
-        while item_idx < items.len() && items[item_idx].after_line == line {
-            let ih = items[item_idx].height;
-            if y < widget_y + ih {
-                return text_y;
-            }
-            widget_y += ih;
-            item_idx += 1;
+/// Translate a cosmic-buffer y (visual rows * line_h) into a widget y.
+fn buffer_y_to_widget_y(metrics: &[LineMetric], buffer_y: f32) -> f32 {
+    if metrics.is_empty() { return buffer_y; }
+    for i in (0..metrics.len() - 1).rev() {
+        if metrics[i].buffer_y <= buffer_y {
+            return metrics[i].widget_y + (buffer_y - metrics[i].buffer_y);
         }
     }
-    text_y + (y - widget_y).max(0.0)
+    metrics[0].widget_y + (buffer_y - metrics[0].buffer_y)
 }
 
-/// Cumulative height of anchored items before a given text line.
-fn items_height_before_line<M, T>(items: &[AnchoredItem<'_, M, T>], line: usize) -> f32 {
-    items.iter()
-        .filter(|it| it.after_line < line)
-        .map(|it| it.height)
-        .sum()
+/// Translate a widget y into a cosmic-buffer y. Click/drag positions go
+/// through this so cosmic-text receives the right visual row.
+fn widget_y_to_buffer_y(metrics: &[LineMetric], widget_y: f32, line_h: f32) -> f32 {
+    if metrics.len() < 2 { return widget_y; }
+    let line_count = metrics.len() - 1;
+    for i in 0..line_count {
+        let line_top = metrics[i].widget_y;
+        let line_bot = line_top + metrics[i].visual_rows as f32 * line_h;
+        if widget_y < line_bot {
+            if widget_y < line_top {
+                return metrics[i].buffer_y;
+            }
+            return metrics[i].buffer_y + (widget_y - line_top);
+        }
+        let next_top = metrics[i + 1].widget_y;
+        if widget_y < next_top {
+            return metrics[i].buffer_y + metrics[i].visual_rows as f32 * line_h;
+        }
+    }
+    let tail = metrics.last().unwrap();
+    tail.buffer_y + (widget_y - tail.widget_y).max(0.0)
 }
 
-/// Total height of all anchored items.
-fn total_items_height<M, T>(items: &[AnchoredItem<'_, M, T>]) -> f32 {
-    items.iter().map(|it| it.height).sum()
+/// Distance-driven fade ratio for the gutter rainbow. `0.0` at the cursor
+/// (full saturation), `1.0` at the far end of the fade window.
+const GUTTER_FADE_CYCLES: f32 = 2.5;
+fn gutter_fade_t(distance: usize) -> f32 {
+    let max_d = GUTTER_FADE_CYCLES * crate::syntax::USER_IDENT_PALETTE_SIZE as f32;
+    (distance as f32 / max_d).min(1.0)
 }
 
 /// Build iced Spans from a LayoutRun's glyphs, grouping consecutive glyphs by color.
@@ -230,6 +247,11 @@ pub struct TextEditor<
     anchored_children: Vec<AnchoredItem<'a, Message, Theme>>,
     gutter_offset: usize,
     is_focused_block: bool,
+    show_gutter: bool,
+    cursor_line: Option<usize>,
+    line_indicator: crate::editor::LineIndicator,
+    gutter_rainbow: bool,
+    line_decors: Vec<crate::syntax::LineDecor>,
 }
 
 impl<'a, Message, Theme>
@@ -263,6 +285,11 @@ where
             anchored_children: Vec::new(),
             gutter_offset: 0,
             is_focused_block: false,
+            show_gutter: false,
+            cursor_line: None,
+            line_indicator: crate::editor::LineIndicator::On,
+            gutter_rainbow: false,
+            line_decors: Vec::new(),
         }
     }
 
@@ -390,6 +417,11 @@ where
             anchored_children: self.anchored_children,
             gutter_offset: self.gutter_offset,
             is_focused_block: self.is_focused_block,
+            show_gutter: self.show_gutter,
+            cursor_line: self.cursor_line,
+            line_indicator: self.line_indicator,
+            gutter_rainbow: self.gutter_rainbow,
+            line_decors: self.line_decors,
         }
     }
 
@@ -440,6 +472,170 @@ where
         self
     }
 
+    /// Reserve a left strip for line numbers + decoration stripes.
+    pub fn show_gutter(mut self, show: bool) -> Self {
+        self.show_gutter = show;
+        self
+    }
+
+    /// Cursor's current line within this block. `None` when not focused.
+    /// Drives both the cursorline tint and the gutter rainbow center.
+    pub fn cursor_line(mut self, line: Option<usize>) -> Self {
+        self.cursor_line = line;
+        self
+    }
+
+    pub fn line_indicator(mut self, ind: crate::editor::LineIndicator) -> Self {
+        self.line_indicator = ind;
+        self
+    }
+
+    pub fn gutter_rainbow(mut self, on: bool) -> Self {
+        self.gutter_rainbow = on;
+        self
+    }
+
+    pub fn line_decors(mut self, decors: Vec<crate::syntax::LineDecor>) -> Self {
+        self.line_decors = decors;
+        self
+    }
+
+    /// Width of the gutter strip given a line count. Caller passes the
+    /// count so this never touches `self.content` (which would deadlock
+    /// when called from inside layout/draw — those already hold the
+    /// content's RefCell).
+    fn gutter_width_for(&self, line_count: usize) -> f32 {
+        if !self.show_gutter { return 0.0; }
+        let total = self.gutter_offset + line_count;
+        let count = if total == 0 { 1 } else { total };
+        let digits = (count as f32).log10().floor() as usize + 1;
+        let font_size: f32 = self.text_size
+            .map(f32::from)
+            .unwrap_or(14.0);
+        let char_width = font_size * 0.6;
+        (digits.max(2) as f32 * char_width + 16.0).ceil()
+    }
+
+    fn draw_gutter_line(
+        &self,
+        renderer: &mut iced_wgpu::Renderer,
+        line_i: usize,
+        bounds: Rectangle,
+        y: f32,
+        line_h: f32,
+        gw: f32,
+        p: &crate::palette::Palette,
+        font_size: f32,
+    ) {
+        use crate::syntax::LineDecor;
+        use crate::editor::LineIndicator;
+
+        let gutter_left = bounds.x + self.padding.left;
+        let gutter_right = gutter_left + gw;
+
+        let decor = self.line_decors.get(line_i).copied().unwrap_or(LineDecor::None);
+        match decor {
+            LineDecor::CodeBlock | LineDecor::FenceMarker => {
+                let bg = Color { a: 0.15, ..p.surface2 };
+                renderer.fill_quad(
+                    renderer::Quad {
+                        bounds: Rectangle::new(
+                            Point::new(gutter_left, y),
+                            Size::new(gw, line_h),
+                        ),
+                        border: Border::default(),
+                        ..renderer::Quad::default()
+                    },
+                    Background::Color(bg),
+                );
+            }
+            LineDecor::Blockquote => {
+                renderer.fill_quad(
+                    renderer::Quad {
+                        bounds: Rectangle::new(
+                            Point::new(gutter_right - 3.0, y),
+                            Size::new(3.0, line_h),
+                        ),
+                        border: Border::default(),
+                        ..renderer::Quad::default()
+                    },
+                    Background::Color(p.lavender),
+                );
+            }
+            LineDecor::HorizontalRule => {
+                let mid_y = y + line_h / 2.0;
+                let stroke_color = crate::oklab::lighten_for_size(p.overlay1, 1.0);
+                renderer.fill_quad(
+                    renderer::Quad {
+                        bounds: Rectangle::new(
+                            Point::new(gutter_left + 4.0, mid_y - 0.5),
+                            Size::new(gw - 8.0, 1.0),
+                        ),
+                        border: Border::default(),
+                        ..renderer::Quad::default()
+                    },
+                    Background::Color(stroke_color),
+                );
+            }
+            LineDecor::None => {}
+        }
+
+        if self.line_indicator == LineIndicator::Off {
+            return;
+        }
+
+        let raw_color = if self.gutter_rainbow {
+            match self.cursor_line {
+                Some(cl) if line_i == cl => p.text,
+                Some(cl) if line_i > cl => {
+                    let d = line_i - cl - 1;
+                    let hue = crate::syntax::rainbow_color(d as u32);
+                    crate::oklab::desaturate(hue, gutter_fade_t(d))
+                }
+                Some(cl) => {
+                    let d = cl - line_i - 1;
+                    let hue = crate::oklab::invert_hue(crate::syntax::rainbow_color(d as u32));
+                    crate::oklab::desaturate(hue, gutter_fade_t(d))
+                }
+                None => p.surface2,
+            }
+        } else {
+            match self.cursor_line {
+                Some(cl) if line_i == cl => p.text,
+                _ => p.surface2,
+            }
+        };
+
+        let line_num = self.gutter_offset + line_i;
+        let label = match (self.line_indicator, self.cursor_line) {
+            (LineIndicator::Vim, Some(cl)) if line_i != cl => {
+                let d = if line_i > cl { line_i - cl } else { cl - line_i };
+                format!("{d}")
+            }
+            _ => format!("{}", line_num + 1),
+        };
+
+        renderer.fill_text(
+            Text {
+                content: label,
+                bounds: Size::new(gw, line_h),
+                size: Pixels(font_size),
+                line_height: self.line_height,
+                font: Font::MONOSPACE,
+                align_x: text::Alignment::Right,
+                align_y: alignment::Vertical::Top,
+                shaping: text::Shaping::Basic,
+                wrapping: Wrapping::None,
+            },
+            Point::new(gutter_right - 8.0, y),
+            crate::oklab::lighten_for_size(raw_color, font_size),
+            Rectangle::new(
+                Point::new(gutter_left, y),
+                Size::new(gw, line_h),
+            ),
+        );
+    }
+
     fn input_method<'b>(
         &self,
         state: &'b State<Highlighter>,
@@ -457,7 +653,12 @@ where
         let bounds = layout.bounds();
         let internal = self.content.0.borrow_mut();
 
-        let text_bounds = bounds.shrink(self.padding);
+        let gw = state.gutter_width.get();
+        let effective_padding = Padding {
+            left: self.padding.left + gw,
+            ..self.padding
+        };
+        let text_bounds = bounds.shrink(effective_padding);
         let translation = text_bounds.position() - Point::ORIGIN;
 
         let cursor = match internal.editor.selection() {
@@ -471,13 +672,9 @@ where
             self.text_size.unwrap_or_else(|| renderer.default_size()),
         );
 
-        let adjusted = if self.anchored_children.is_empty() {
-            cursor
-        } else {
-            let line_h: f32 = line_height.into();
-            let line = (cursor.y / line_h).round() as usize;
-            let offset = items_height_before_line(&self.anchored_children, line);
-            Point::new(cursor.x, cursor.y + offset)
+        let adjusted = {
+            let metrics = state.line_metrics.borrow();
+            Point::new(cursor.x, buffer_y_to_widget_y(&metrics, cursor.y))
         };
 
         let position = adjusted + translation;
@@ -630,6 +827,15 @@ pub struct State<Highlighter: text::Highlighter> {
     /// Paragraphs built during draw() — kept alive so the renderer's Weak refs
     /// survive until the prepare() phase processes them.
     retained_paragraphs: RefCell<Vec<iced_graphics::text::Paragraph>>,
+    /// Per-logical-line metrics published by `layout()`. Every consumer
+    /// (draw, cursor caret, click/drag hit-testing, IME) reads from this
+    /// same Vec — there is no parallel computation. Length = line_count
+    /// + 1, with the trailing sentinel marking widget/buffer y past the
+    /// last line.
+    line_metrics: RefCell<Vec<LineMetric>>,
+    /// Gutter strip width, also published by layout. Same single-source
+    /// rule: events translate click x by reading this, never recomputing.
+    gutter_width: std::cell::Cell<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -707,6 +913,8 @@ where
             highlighter_settings: self.highlighter_settings.clone(),
             highlighter_format_address: self.highlighter_format as usize,
             retained_paragraphs: RefCell::new(Vec::new()),
+            line_metrics: RefCell::new(Vec::new()),
+            gutter_width: std::cell::Cell::new(0.0),
         })
     }
 
@@ -756,8 +964,15 @@ where
             .min_height(self.min_height)
             .max_height(self.max_height);
 
+        let gw = self.gutter_width_for(internal.editor.line_count());
+        state.gutter_width.set(gw);
+        let effective_padding = Padding {
+            left: self.padding.left + gw,
+            ..self.padding
+        };
+
         internal.editor.update(
-            limits.shrink(self.padding).max(),
+            limits.shrink(effective_padding).max(),
             self.font.unwrap_or_else(|| renderer.default_font()),
             self.text_size.unwrap_or_else(|| renderer.default_size()),
             self.line_height,
@@ -768,19 +983,33 @@ where
         let line_h: f32 = self.line_height.to_absolute(
             self.text_size.unwrap_or_else(|| renderer.default_size()),
         ).into();
-        let extra = total_items_height(&self.anchored_children);
 
-        // Compute child layouts at their stream positions
+        // Single source-of-truth: walk lines + anchored children once and
+        // build per-line metrics. Each LineMetric records the widget-y +
+        // buffer-y of that line's first visual row, plus the wrap count.
+        // Draw, cursor positioning, click/drag — every consumer reads from
+        // this same Vec so they cannot drift.
         let mut child_nodes = Vec::with_capacity(self.anchored_children.len());
         let child_limits = layout::Limits::new(
             Size::ZERO,
-            Size::new(limits.shrink(self.padding).max().width, f32::INFINITY),
+            Size::new(limits.shrink(effective_padding).max().width, f32::INFINITY),
         );
-        let mut stream_y = 0.0f32;
+        let buffer = internal.editor.buffer();
+        let line_count = buffer.lines.len();
+        let mut metrics: Vec<LineMetric> = Vec::with_capacity(line_count + 1);
+        let mut widget_y = 0.0f32;
+        let mut buffer_y = 0.0f32;
         let mut next_child = 0;
-        let line_count = internal.editor.line_count();
         for line in 0..line_count {
-            stream_y += line_h;
+            let visual_rows = buffer.lines[line]
+                .layout_opt()
+                .map(|v| v.len())
+                .unwrap_or(1)
+                .max(1);
+            metrics.push(LineMetric { widget_y, buffer_y, visual_rows });
+            let line_visual_h = visual_rows as f32 * line_h;
+            widget_y += line_visual_h;
+            buffer_y += line_visual_h;
             while next_child < self.anchored_children.len()
                 && self.anchored_children[next_child].after_line == line
             {
@@ -790,14 +1019,17 @@ where
                     renderer,
                     &child_limits,
                 );
-                node = node.move_to(Point::new(self.padding.left, self.padding.top + stream_y));
+                node = node.move_to(Point::new(
+                    self.padding.left + gw,
+                    self.padding.top + widget_y,
+                ));
                 child.height = node.bounds().height;
-                stream_y += child.height;
+                widget_y += child.height;
                 child_nodes.push(node);
                 next_child += 1;
             }
         }
-        // Remaining children after last line
+        // Remaining children after last line — they sit below all text.
         while next_child < self.anchored_children.len() {
             let child = &mut self.anchored_children[next_child];
             let mut node = child.element.as_widget_mut().layout(
@@ -805,18 +1037,27 @@ where
                 renderer,
                 &child_limits,
             );
-            node = node.move_to(Point::new(self.padding.left, self.padding.top + stream_y));
+            node = node.move_to(Point::new(
+                self.padding.left + gw,
+                self.padding.top + widget_y,
+            ));
             child.height = node.bounds().height;
-            stream_y += child.height;
+            widget_y += child.height;
             child_nodes.push(node);
             next_child += 1;
         }
+        // Push sentinel AFTER trailing children are placed, so the
+        // sentinel widget_y reflects the true bottom of the stream.
+        metrics.push(LineMetric { widget_y, buffer_y, visual_rows: 0 });
+        let extra = widget_y - buffer_y;
+        *state.line_metrics.borrow_mut() = metrics;
 
         match self.height {
             Length::Fill | Length::FillPortion(_) | Length::Fixed(_) => {
-                let mut size = limits.max();
-                size.height += extra;
-                layout::Node::with_children(size, child_nodes)
+                // Fixed/Fill: caller specified the height. Honor it as-is —
+                // anchored items live within that height; trailing space
+                // would otherwise create phantom gaps below the block.
+                layout::Node::with_children(limits.max(), child_nodes)
             }
             Length::Shrink => {
                 let min_bounds = internal.editor.min_bounds();
@@ -923,13 +1164,13 @@ where
 
             match update {
                 Update::Click(click) => {
+                    let gw = state.gutter_width.get();
                     let action = match click.kind() {
                         mouse::click::Kind::Single => {
                             let mut pos = click.position();
-                            if !self.anchored_children.is_empty() {
-                                let lc = self.content.0.borrow().editor.line_count();
-                                pos.y = stream_y_to_text_y(pos.y, &self.anchored_children, line_h, lc);
-                            }
+                            pos.x = (pos.x - gw).max(0.0);
+                            let metrics = state.line_metrics.borrow();
+                            pos.y = widget_y_to_buffer_y(&metrics, pos.y, line_h);
                             Action::Click(pos)
                         }
                         mouse::click::Kind::Double => Action::SelectWord,
@@ -944,11 +1185,11 @@ where
                     shell.capture_event();
                 }
                 Update::Drag(position) => {
+                    let gw = state.gutter_width.get();
                     let mut pos = position;
-                    if !self.anchored_children.is_empty() {
-                        let lc = self.content.0.borrow().editor.line_count();
-                        pos.y = stream_y_to_text_y(pos.y, &self.anchored_children, line_h, lc);
-                    }
+                    pos.x = (pos.x - gw).max(0.0);
+                    let metrics = state.line_metrics.borrow();
+                    pos.y = widget_y_to_buffer_y(&metrics, pos.y, line_h);
                     shell.publish(on_edit(Action::Drag(pos)));
                 }
                 Update::Release => {
@@ -1176,10 +1417,32 @@ where
             style.background,
         );
 
-        let text_bounds = bounds.shrink(self.padding);
+        let gw = state.gutter_width.get();
+        let effective_padding = Padding {
+            left: self.padding.left + gw,
+            ..self.padding
+        };
+        let text_bounds = bounds.shrink(effective_padding);
 
         let text_size = self.text_size.unwrap_or_else(|| renderer.default_size());
         let line_h: f32 = self.line_height.to_absolute(text_size).into();
+
+        // Gutter background — only the strip below top_pad so the title-bar
+        // / traffic-light area doesn't get painted.
+        if self.show_gutter && self.padding.top < bounds.height {
+            let p = crate::palette::current();
+            renderer.fill_quad(
+                renderer::Quad {
+                    bounds: Rectangle::new(
+                        Point::new(bounds.x, bounds.y + self.padding.top),
+                        Size::new(gw + self.padding.left, bounds.height - self.padding.top),
+                    ),
+                    border: Border::default(),
+                    ..renderer::Quad::default()
+                },
+                Background::Color(p.crust),
+            );
+        }
 
         if internal.editor.is_empty() {
             if let Some(placeholder) = self.placeholder.clone() {
@@ -1200,19 +1463,13 @@ where
                     text_bounds,
                 );
             }
-        } else if self.anchored_children.is_empty() {
-            renderer.fill_editor(
-                &internal.editor,
-                text_bounds.position(),
-                style.value,
-                text_bounds,
-            );
         } else {
             // Sequential stream: text lines (layer 0) interleaved with
-            // anchored children (layer 1) in one continuous pass.
+            // anchored children (layer 1) in one continuous pass. Cursorline
+            // tint and gutter line numbers are drawn on the SAME y as the
+            // line's paragraph — single source of truth.
             let buffer = internal.editor.buffer();
             let line_count = buffer.lines.len();
-            let mut stream_y = 0.0f32;
             let mut child_idx = 0;
             let children_layouts: Vec<_> = layout.children().collect();
 
@@ -1222,6 +1479,7 @@ where
             {
                 let mut paras = state.retained_paragraphs.borrow_mut();
                 paras.clear();
+                let metrics = state.line_metrics.borrow();
                 for i in 0..line_count {
                     let line_text = buffer.lines[i].text();
                     let glyphs: Vec<cosmic_text::LayoutGlyph> =
@@ -1229,9 +1487,10 @@ where
                             .map(|layouts| layouts.iter().flat_map(|l| l.glyphs.iter().cloned()).collect())
                             .unwrap_or_default();
                     let spans = build_color_spans(line_text, &glyphs, f32::from(text_size));
+                    let visual_rows = metrics.get(i).map(|m| m.visual_rows).unwrap_or(1).max(1);
                     paras.push(iced_graphics::text::Paragraph::with_spans(Text {
                         content: spans.as_slice(),
-                        bounds: Size::new(text_bounds.width, line_h),
+                        bounds: Size::new(text_bounds.width, visual_rows as f32 * line_h),
                         size: text_size,
                         line_height: self.line_height,
                         font,
@@ -1243,9 +1502,45 @@ where
                 }
             }
 
+            let p = crate::palette::current();
+            let font_size_px: f32 = f32::from(text_size);
             let paras = state.retained_paragraphs.borrow();
+            let metrics = state.line_metrics.borrow();
             for line_i in 0..line_count {
-                let y = text_bounds.y + line_i as f32 * line_h + stream_y;
+                // Pull line position from the Vec layout published.
+                let m = match metrics.get(line_i) {
+                    Some(m) => m,
+                    None => continue,
+                };
+                let y = text_bounds.y + m.widget_y;
+                let row_h = m.visual_rows as f32 * line_h;
+
+                // Cursorline tint — full editor width (incl. gutter),
+                // covers all visual rows of the wrapped logical line.
+                if self.is_focused_block
+                    && self.cursor_line == Some(line_i)
+                    && self.line_indicator != crate::editor::LineIndicator::Off
+                {
+                    let band = Color { a: 0.06, ..p.text };
+                    renderer.fill_quad(
+                        renderer::Quad {
+                            bounds: Rectangle::new(
+                                Point::new(bounds.x, y),
+                                Size::new(bounds.width, row_h),
+                            ),
+                            border: Border::default(),
+                            ..renderer::Quad::default()
+                        },
+                        Background::Color(band),
+                    );
+                }
+
+                // Gutter — line decor stripe + line number, in the strip
+                // between bounds.x and text_bounds.x.
+                if self.show_gutter {
+                    self.draw_gutter_line(renderer, line_i, bounds, y, line_h, gw, &p, font_size_px);
+                }
+
                 renderer.fill_paragraph(
                     &paras[line_i],
                     Point::new(text_bounds.x, y),
@@ -1268,7 +1563,6 @@ where
                             _viewport,
                         );
                     }
-                    stream_y += self.anchored_children[child_idx].height;
                     child_idx += 1;
                 }
             }
@@ -1293,14 +1587,9 @@ where
         let translation = text_bounds.position() - Point::ORIGIN;
 
         if let Some(focus) = state.focus.as_ref() {
+            let metrics_for_cursor = state.line_metrics.borrow();
             let adjust_y = |pos: Point| -> Point {
-                if self.anchored_children.is_empty() {
-                    pos
-                } else {
-                    let line = (pos.y / line_h).round() as usize;
-                    let offset = items_height_before_line(&self.anchored_children, line);
-                    Point::new(pos.x, pos.y + offset)
-                }
+                Point::new(pos.x, buffer_y_to_widget_y(&metrics_for_cursor, pos.y))
             };
 
             match internal.editor.selection() {

@@ -74,6 +74,23 @@ pub enum Message {
     InsertTable,
     ToggleBold,
     ToggleItalic,
+    ToggleStrike,
+    ToggleUnderline,
+    ToggleBlockquote,
+    /// Wrap the selection in matching delimiters; if the selection is
+    /// already wrapped (markers immediately surround it, with or without
+    /// being included in the selection), unwrap it.
+    WrapWith(&'static str, &'static str),
+    /// Insert a paired `[]` / `{}` and place the cursor between them.
+    /// Only applied to `[` and `{`; quotes/parens deliberately do NOT pair
+    /// on type — use Cmd+"/'/9 to wrap a selection.
+    AutoPair(&'static str, &'static str),
+    /// Cmd+0: incremental scope exit. Each press closes the innermost
+    /// unclosed pair within the current block; once everything is closed,
+    /// jumps the cursor past the next outer scope's closing delimiter; once
+    /// fully at block scope, ensures a "newline sandwich" (cursor on a
+    /// blank line with one blank line of padding above and below).
+    FixUp,
     Evaluate,
     SmartEval,
     ZoomIn,
@@ -1803,30 +1820,254 @@ impl EditorState {
         self.rebuild_modules();
     }
 
-    fn toggle_wrap(&mut self, marker: &str) {
-        let mlen = marker.len();
-        match self.content().selection() {
-            Some(sel) if sel.starts_with(marker) && sel.ends_with(marker) && sel.len() >= mlen * 2 => {
-                let inner = &sel[mlen..sel.len() - mlen];
+    /// Wrap a selection in matching delimiters or unwrap an existing pair.
+    /// Used by Cmd+B (`**`), Cmd+I (`*`), Cmd+~ (`~~`), Cmd+", etc.
+    ///
+    /// Unwrap detection looks at characters IMMEDIATELY outside the
+    /// selection, not just inside it — so the selection can be the inner
+    /// text (without markers) and Cmd+B still toggles off.
+    ///
+    /// Star-marker parity rule: bold (`**`) unwraps when the surrounding
+    /// star count on each side is >= 2 AND even (2 → 0, 4 → 2, …).
+    /// Italic (`*`) unwraps when the count is odd (1, 3, 5 …). This
+    /// keeps `**bold**` + Cmd+I → wraps to `***bold***` (bold-italic),
+    /// not destructive; and `***both***` + Cmd+B → `*both*` (strips bold).
+    fn toggle_wrap(&mut self, open: &str, close: &str) {
+        let text = self.content().text();
+        let cursor = self.content().cursor();
+        let pos = byte_offset_for_cursor(&text, &cursor.position);
+        let (start, end) = match self.selection_byte_range(&text, pos) {
+            Some(range) => range,
+            None => {
+                // No selection: insert paired markers and park cursor between.
+                let s = format!("{open}{close}");
+                self.content_mut().perform(text_widget::Action::Edit(
+                    text_widget::Edit::Paste(Arc::new(s)),
+                ));
+                for _ in 0..close.chars().count() {
+                    self.content_mut().perform(text_widget::Action::Move(Motion::Left));
+                }
+                self.reparse();
+                return;
+            }
+        };
+
+        let selected = &text[start..end];
+        let before = &text[..start];
+        let after = &text[end..];
+
+        let star_marker = open.chars().all(|c| c == '*') && close == open;
+        if star_marker {
+            let mlen = open.len();
+            // Sym-strip when markers are inside the selection itself.
+            if selected.starts_with(open) && selected.ends_with(close) && selected.len() >= mlen * 2 {
+                let inner = &selected[mlen..selected.len() - mlen];
                 self.content_mut().perform(text_widget::Action::Edit(
                     text_widget::Edit::Paste(Arc::new(inner.to_string())),
                 ));
+                self.reparse();
+                return;
             }
-            Some(sel) => {
-                let wrapped = format!("{marker}{sel}{marker}");
+            let outer = count_trailing_char(before, '*').min(count_leading_char(after, '*'));
+            let should_unwrap = match mlen {
+                2 => outer >= 2 && outer % 2 == 0, // bold
+                1 => outer >= 1 && outer % 2 == 1, // italic
+                _ => outer >= mlen,
+            };
+            if should_unwrap {
+                self.replace_range(start - mlen, end + mlen, selected);
+                return;
+            }
+        } else {
+            // Non-star markers: simple symmetric strip.
+            let olen = open.len();
+            let clen = close.len();
+            if selected.starts_with(open) && selected.ends_with(close) && selected.len() >= olen + clen {
+                let inner = &selected[olen..selected.len() - clen];
                 self.content_mut().perform(text_widget::Action::Edit(
-                    text_widget::Edit::Paste(Arc::new(wrapped)),
+                    text_widget::Edit::Paste(Arc::new(inner.to_string())),
                 ));
+                self.reparse();
+                return;
             }
-            None => {
-                let empty = format!("{marker}{marker}");
-                self.content_mut().perform(text_widget::Action::Edit(
-                    text_widget::Edit::Paste(Arc::new(empty)),
-                ));
-                for _ in 0..mlen {
-                    self.content_mut().perform(text_widget::Action::Move(Motion::Left));
-                }
+            if before.ends_with(open) && after.starts_with(close) {
+                self.replace_range(start - olen, end + clen, selected);
+                return;
             }
+        }
+
+        // Default: wrap.
+        let wrapped = format!("{open}{selected}{close}");
+        self.content_mut().perform(text_widget::Action::Edit(
+            text_widget::Edit::Paste(Arc::new(wrapped)),
+        ));
+        self.reparse();
+    }
+
+    /// Replace a byte range in the current content with `replacement`. Used
+    /// by toggle_wrap's unwrap path so we can rewrite text that sits OUTSIDE
+    /// the selection (the surrounding markers).
+    fn replace_range(&mut self, start: usize, end: usize, replacement: &str) {
+        let text = self.content().text();
+        if start > end || end > text.len() { return; }
+        let mut new_text = String::with_capacity(text.len() - (end - start) + replacement.len());
+        new_text.push_str(&text[..start]);
+        new_text.push_str(replacement);
+        new_text.push_str(&text[end..]);
+        // Rebuild the content with the new text and place cursor at end of
+        // replacement so successive toggles continue to operate at the
+        // same logical spot.
+        let cursor_byte = start + replacement.len();
+        self.content_mut().perform(text_widget::Action::Move(Motion::DocumentStart));
+        self.content_mut().perform(text_widget::Action::Select(Motion::DocumentEnd));
+        self.content_mut().perform(text_widget::Action::Edit(
+            text_widget::Edit::Paste(Arc::new(new_text.clone())),
+        ));
+        // Position cursor at byte offset cursor_byte by walking from start.
+        let target = line_col_for_byte(&new_text, cursor_byte);
+        self.content_mut().perform(text_widget::Action::Move(Motion::DocumentStart));
+        for _ in 0..target.0 {
+            self.content_mut().perform(text_widget::Action::Move(Motion::Down));
+        }
+        self.content_mut().perform(text_widget::Action::Move(Motion::Home));
+        for _ in 0..target.1 {
+            self.content_mut().perform(text_widget::Action::Move(Motion::Right));
+        }
+        self.reparse();
+    }
+
+    /// Compute the byte range of the current selection (start, end) or None
+    /// when no selection is active.
+    fn selection_byte_range(&self, text: &str, _cursor_pos: usize) -> Option<(usize, usize)> {
+        let sel = self.content().selection()?;
+        // We need the start position; use cursor + selection length to
+        // bracket. Selection is the text between selection-start and cursor;
+        // search both directions in the buffer to find a unique location.
+        // For toggle_wrap's purposes, we use the cursor position as the END
+        // and walk back by sel.len() to find start. This is correct when
+        // selection extends backward from the cursor; otherwise we fall
+        // back to a forward search.
+        let cursor = self.content().cursor();
+        let cursor_byte = byte_offset_for_cursor(text, &cursor.position);
+        let len = sel.len();
+        // Try cursor at end of selection.
+        if cursor_byte >= len && &text[cursor_byte - len..cursor_byte] == sel.as_str() {
+            return Some((cursor_byte - len, cursor_byte));
+        }
+        // Try cursor at start of selection.
+        if cursor_byte + len <= text.len() && &text[cursor_byte..cursor_byte + len] == sel.as_str() {
+            return Some((cursor_byte, cursor_byte + len));
+        }
+        // Fall back to searching the doc.
+        text.find(sel.as_str()).map(|s| (s, s + len))
+    }
+
+    /// Insert paired delimiters at the cursor and place the caret between
+    /// them. Used for `[` → `[|]` and `{` → `{|}`. Quotes/parens are
+    /// deliberately NOT auto-paired.
+    fn auto_pair(&mut self, open: &str, close: &str) {
+        let combined = format!("{open}{close}");
+        self.content_mut().perform(text_widget::Action::Edit(
+            text_widget::Edit::Paste(Arc::new(combined)),
+        ));
+        for _ in 0..close.chars().count() {
+            self.content_mut().perform(text_widget::Action::Move(Motion::Left));
+        }
+    }
+
+    /// Toggle blockquote prefix on the current line(s). With a selection
+    /// spanning multiple lines, prefix `> ` to each; if every line already
+    /// has `> `, strip it.
+    fn toggle_blockquote(&mut self) {
+        let text = self.content().text();
+        let cursor = self.content().cursor();
+        let lines: Vec<&str> = text.lines().collect();
+        let cur_line = cursor.position.line.min(lines.len().saturating_sub(1));
+        // Single-line toggle: simplest meaningful form.
+        if cur_line >= lines.len() { return; }
+        let line = lines[cur_line];
+        let mut new_lines: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        if let Some(rest) = line.strip_prefix("> ") {
+            new_lines[cur_line] = rest.to_string();
+        } else {
+            new_lines[cur_line] = format!("> {line}");
+        }
+        let new_text = new_lines.join("\n");
+        self.content_mut().perform(text_widget::Action::Move(Motion::DocumentStart));
+        self.content_mut().perform(text_widget::Action::Select(Motion::DocumentEnd));
+        self.content_mut().perform(text_widget::Action::Edit(
+            text_widget::Edit::Paste(Arc::new(new_text)),
+        ));
+        self.reparse();
+    }
+
+    /// Cmd+0 catch-all. See `Message::FixUp` for the spec.
+    fn fix_up(&mut self) {
+        let text = self.content().text();
+        let cursor = self.content().cursor();
+        let pos = byte_offset_for_cursor(&text, &cursor.position);
+        // 1. Innermost unclosed delimiter? Close it.
+        if let Some(close) = innermost_unclosed_delim(&text[..pos]) {
+            self.content_mut().perform(text_widget::Action::Edit(
+                text_widget::Edit::Paste(Arc::new(close.to_string())),
+            ));
+            return;
+        }
+        // 2. Forward to the next outer scope's closing delimiter and step past it.
+        if let Some(jump_to) = next_closing_delim_after(&text, pos) {
+            let target = line_col_for_byte(&text, jump_to + 1);
+            self.content_mut().perform(text_widget::Action::Move(Motion::DocumentStart));
+            for _ in 0..target.0 {
+                self.content_mut().perform(text_widget::Action::Move(Motion::Down));
+            }
+            self.content_mut().perform(text_widget::Action::Move(Motion::Home));
+            for _ in 0..target.1 {
+                self.content_mut().perform(text_widget::Action::Move(Motion::Right));
+            }
+            return;
+        }
+        // 3. At block scope: ensure newline sandwich.
+        self.ensure_newline_sandwich();
+    }
+
+    /// Move the cursor onto its own line with exactly one blank line of
+    /// padding above and below (3 newlines total around the caret), or up
+    /// to EOF on either side.
+    fn ensure_newline_sandwich(&mut self) {
+        let text = self.content().text();
+        let cursor = self.content().cursor();
+        let pos = byte_offset_for_cursor(&text, &cursor.position);
+        // Walk back: collapse trailing whitespace/newlines before pos to "\n\n".
+        let mut left = pos;
+        while left > 0 {
+            let c = text[..left].chars().rev().next().unwrap();
+            if c == '\n' || c.is_whitespace() { left -= c.len_utf8(); } else { break; }
+        }
+        // Walk forward: collapse leading whitespace/newlines after pos to "\n\n".
+        let mut right = pos;
+        while right < text.len() {
+            let c = text[right..].chars().next().unwrap();
+            if c == '\n' || c.is_whitespace() { right += c.len_utf8(); } else { break; }
+        }
+        let prefix = if left == 0 { String::new() } else { "\n\n".to_string() };
+        let suffix = if right == text.len() { String::new() } else { "\n\n".to_string() };
+        let middle = "\n";
+        let new_text = format!("{}{}{}{}{}",
+            &text[..left], prefix, middle, suffix, &text[right..]);
+        let cursor_byte = left + prefix.len() + middle.len();
+        self.content_mut().perform(text_widget::Action::Move(Motion::DocumentStart));
+        self.content_mut().perform(text_widget::Action::Select(Motion::DocumentEnd));
+        self.content_mut().perform(text_widget::Action::Edit(
+            text_widget::Edit::Paste(Arc::new(new_text.clone())),
+        ));
+        let target = line_col_for_byte(&new_text, cursor_byte);
+        self.content_mut().perform(text_widget::Action::Move(Motion::DocumentStart));
+        for _ in 0..target.0 {
+            self.content_mut().perform(text_widget::Action::Move(Motion::Down));
+        }
+        self.content_mut().perform(text_widget::Action::Move(Motion::Home));
+        for _ in 0..target.1 {
+            self.content_mut().perform(text_widget::Action::Move(Motion::Right));
         }
         self.reparse();
     }
@@ -2429,12 +2670,14 @@ impl EditorState {
                 // Intentionally NOT calling run_eval() — see eval_segment_range
                 // for the destruction-class bug this avoids.
             }
-            Message::ToggleBold => {
-                self.toggle_wrap("**");
-            }
-            Message::ToggleItalic => {
-                self.toggle_wrap("*");
-            }
+            Message::ToggleBold => self.toggle_wrap("**", "**"),
+            Message::ToggleItalic => self.toggle_wrap("*", "*"),
+            Message::ToggleStrike => self.toggle_wrap("~~", "~~"),
+            Message::ToggleUnderline => self.toggle_wrap("<u>", "</u>"),
+            Message::WrapWith(open, close) => self.toggle_wrap(open, close),
+            Message::ToggleBlockquote => self.toggle_blockquote(),
+            Message::AutoPair(open, close) => self.auto_pair(open, close),
+            Message::FixUp => self.fix_up(),
             Message::Evaluate => {
                 self.run_eval();
             }
@@ -3276,6 +3519,8 @@ impl EditorState {
                 if single_text_block {
                     let is_focused = bi == self.focused_block;
                     let cursor_line = tb.content.cursor().position.line;
+                    let text = tb.content.text();
+                    let decors = compute_line_decors(&text);
 
                     let anchored_items = self.build_anchored_items(tb.id);
                     let editor = text_widget::TextEditor::new(&tb.content)
@@ -3288,10 +3533,17 @@ impl EditorState {
                         .wrapping(Wrapping::Word)
                         .key_binding(macos_key_binding)
                         .anchored(anchored_items)
+                        .show_gutter(true)
+                        .gutter_offset(0)
+                        .focused(is_focused)
+                        .cursor_line(if is_focused { Some(cursor_line) } else { None })
+                        .line_indicator(self.line_indicator)
+                        .gutter_rainbow(self.gutter_rainbow)
+                        .line_decors(decors)
                         .style(|_theme, _status| {
                             let p = palette::current();
                             text_widget::Style {
-                                background: Background::Color(Color::TRANSPARENT),
+                                background: Background::Color(p.base),
                                 border: Border::default(),
                                 placeholder: p.overlay0,
                                 value: p.text,
@@ -3313,52 +3565,7 @@ impl EditorState {
                         )
                         .into();
 
-                    let cursorline: Element<'_, Message, Theme, iced_wgpu::Renderer> =
-                        canvas::Canvas::new(Cursorline {
-                            cursor_line: if is_focused { Some(cursor_line) } else { None },
-                            font_size: self.font_size,
-                            top_pad: title_bar_h,
-                            item_offsets: self.item_offsets(tb.id),
-                            indicator: self.line_indicator,
-                        })
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .into();
-
-                    let editor_with_cursorline: Element<'_, Message, Theme, iced_wgpu::Renderer> =
-                        iced_widget::stack![cursorline, editor_el]
-                            .width(Length::Fill)
-                            .height(Length::Fill)
-                            .into();
-
-                    let text = tb.content.text();
-                    let line_count = tb.content.line_count();
-                    let decors = compute_line_decors(&text);
-                    let gutter = Gutter {
-                        line_count,
-                        global_line_offset: 0,
-                        font_size: self.font_size,
-                        scroll_offset: self.scroll_offset,
-                        cursor_line: if is_focused { Some(cursor_line) } else { None },
-                        top_pad: title_bar_h,
-                        line_decors: decors,
-                        item_offsets: self.item_offsets(tb.id),
-                        indicator: self.line_indicator,
-                        rainbow: self.gutter_rainbow,
-                    };
-                    let gw = gutter.gutter_width();
-
-                    let gutter_canvas: Element<'_, Message, Theme, iced_wgpu::Renderer> =
-                        canvas::Canvas::new(gutter)
-                            .width(Length::Fixed(gw))
-                            .height(Length::Fill)
-                            .into();
-
-                    block_elements.push(
-                        iced_widget::row![gutter_canvas, editor_with_cursorline]
-                            .height(Length::Fill)
-                            .into()
-                    );
+                    block_elements.push(editor_el);
                 } else {
                     let top_pad = if bi == 0 { title_bar_h } else { 0.0 };
                     let is_focused = bi == self.focused_block;
@@ -3366,6 +3573,13 @@ impl EditorState {
                     let anchored_items = self.build_anchored_items(tb.id);
                     let items_h: f32 = anchored_items.iter().map(|a| a.height).sum();
                     let editor_h = (actual_lines as f32) * line_h + top_pad + 8.0 + items_h;
+                    let cursor_line = tb.content.cursor().position.line;
+                    let line_count = tb.content.line_count();
+                    let text = tb.content.text();
+                    let decors = compute_line_decors(&text);
+                    let this_global_line = global_line;
+                    global_line += line_count;
+
                     let editor = text_widget::TextEditor::new(&tb.content)
                         .id(block_editor_id(tb.id))
                         .on_action(move |action| Message::BlockAction(block_idx, action))
@@ -3376,10 +3590,17 @@ impl EditorState {
                         .wrapping(Wrapping::Word)
                         .key_binding(macos_key_binding)
                         .anchored(anchored_items)
+                        .show_gutter(true)
+                        .gutter_offset(this_global_line)
+                        .focused(is_focused)
+                        .cursor_line(if is_focused { Some(cursor_line) } else { None })
+                        .line_indicator(self.line_indicator)
+                        .gutter_rainbow(self.gutter_rainbow)
+                        .line_decors(decors)
                         .style(|_theme, _status| {
                             let p = palette::current();
                             text_widget::Style {
-                                background: Background::Color(Color::TRANSPARENT),
+                                background: Background::Color(p.base),
                                 border: Border::default(),
                                 placeholder: p.overlay0,
                                 value: p.text,
@@ -3401,58 +3622,7 @@ impl EditorState {
                         )
                         .into();
 
-                    let line_count = tb.content.line_count();
-                    let cursor_line = tb.content.cursor().position.line;
-                    let text = tb.content.text();
-                    let decors = compute_line_decors(&text);
-                    let gutter = Gutter {
-                        line_count,
-                        global_line_offset: global_line,
-                        font_size: self.font_size,
-                        scroll_offset: 0.0,
-                        cursor_line: if is_focused { Some(cursor_line) } else { None },
-                        top_pad,
-                        line_decors: decors,
-                        item_offsets: self.item_offsets(tb.id),
-                        indicator: self.line_indicator,
-                        rainbow: self.gutter_rainbow,
-                    };
-                    global_line += line_count;
-                    let gw = gutter.gutter_width();
-
-                    let cursorline: Element<'_, Message, Theme, iced_wgpu::Renderer> =
-                        canvas::Canvas::new(Cursorline {
-                            cursor_line: if is_focused { Some(cursor_line) } else { None },
-                            font_size: self.font_size,
-                            top_pad,
-                            item_offsets: self.item_offsets(tb.id),
-                            indicator: self.line_indicator,
-                        })
-                        .width(Length::Fill)
-                        .height(Length::Fixed(editor_h))
-                        .into();
-
-                    let editor_with_cursorline: Element<'_, Message, Theme, iced_wgpu::Renderer> =
-                        iced_widget::stack![cursorline, editor_el]
-                            .width(Length::Fill)
-                            .height(Length::Fixed(editor_h))
-                            .into();
-
-                    let gutter_canvas: Element<'_, Message, Theme, iced_wgpu::Renderer> =
-                        canvas::Canvas::new(gutter)
-                            .width(Length::Fixed(gw))
-                            .height(Length::Fixed(editor_h))
-                            .into();
-
-                    block_elements.push(
-                        iced_widget::container(
-                            iced_widget::row![gutter_canvas, editor_with_cursorline]
-                        )
-                        .width(Length::Fill)
-                        .height(Length::Fixed(editor_h))
-                        .into()
-                    );
-
+                    block_elements.push(editor_el);
                 }
                 continue;
             }
@@ -4281,8 +4451,12 @@ fn macos_key_binding(key_press: KeyPress) -> Option<Binding<Message>> {
         keyboard::Key::Character("-") if modifiers.logo() => {
             Some(Binding::Custom(Message::ZoomOut))
         }
-        keyboard::Key::Character("0") if modifiers.logo() => {
-            Some(Binding::Custom(Message::ZoomReset))
+        // Cmd+0 lives in handle.rs now (FixUp); Cmd+Shift+0 resets zoom.
+        keyboard::Key::Character("[") if !modifiers.logo() && !modifiers.alt() && !modifiers.control() => {
+            Some(Binding::Custom(Message::AutoPair("[", "]")))
+        }
+        keyboard::Key::Character("{") if !modifiers.logo() && !modifiers.alt() && !modifiers.control() => {
+            Some(Binding::Custom(Message::AutoPair("{", "}")))
         }
         keyboard::Key::Named(key::Named::Backspace) if modifiers.alt() => {
             Some(Binding::Sequence(vec![
@@ -4375,6 +4549,96 @@ fn detect_lang_from_content(text: &str) -> Option<String> {
 fn leading_whitespace(line: &str) -> &str {
     let end = line.len() - line.trim_start().len();
     &line[..end]
+}
+
+/// Count consecutive trailing occurrences of `c` at the end of `s`.
+fn count_trailing_char(s: &str, c: char) -> usize {
+    s.chars().rev().take_while(|&x| x == c).count()
+}
+
+/// Count consecutive leading occurrences of `c` at the start of `s`.
+fn count_leading_char(s: &str, c: char) -> usize {
+    s.chars().take_while(|&x| x == c).count()
+}
+
+/// Convert an iced `Position { line, column }` to a byte offset within
+/// `text`. column is interpreted as char count (cosmic-text convention).
+fn byte_offset_for_cursor(text: &str, pos: &text_widget::Position) -> usize {
+    let mut byte = 0usize;
+    let mut line_idx = 0usize;
+    for line in text.split_inclusive('\n') {
+        if line_idx == pos.line {
+            let col = pos.column;
+            for (i, _) in line.char_indices().take(col) {
+                byte += line.as_bytes()[i..i + 1].len();
+            }
+            // Walk col chars precisely.
+            let mut walked = 0usize;
+            for (ci, _) in line.char_indices() {
+                if walked == col { return byte.saturating_sub(line.len()) + ci; }
+                walked += 1;
+            }
+            // col >= line length: clamp to end of line content (before \n).
+            return byte + line.trim_end_matches('\n').len();
+        }
+        byte += line.len();
+        line_idx += 1;
+    }
+    text.len()
+}
+
+/// Inverse of `byte_offset_for_cursor`. Returns (line, column).
+fn line_col_for_byte(text: &str, byte: usize) -> (usize, usize) {
+    let mut acc = 0usize;
+    let mut line_idx = 0usize;
+    for line in text.split_inclusive('\n') {
+        if byte < acc + line.len() {
+            let local = &line[..byte - acc];
+            return (line_idx, local.chars().count());
+        }
+        acc += line.len();
+        line_idx += 1;
+    }
+    let last_line = text.lines().count().saturating_sub(1);
+    (last_line, text.lines().last().map(|l| l.chars().count()).unwrap_or(0))
+}
+
+/// Walk `text` left-to-right tracking a delimiter stack. Return the
+/// `close` char of the innermost still-open pair, or None if balanced.
+/// Pairs tracked: `()`, `[]`, `{}`. (Quotes/HTML are intentionally out
+/// of scope — too ambiguous in markdown.)
+fn innermost_unclosed_delim(text: &str) -> Option<char> {
+    let mut stack: Vec<char> = Vec::new();
+    for c in text.chars() {
+        match c {
+            '(' => stack.push(')'),
+            '[' => stack.push(']'),
+            '{' => stack.push('}'),
+            ')' | ']' | '}' => {
+                if stack.last() == Some(&c) { stack.pop(); }
+            }
+            _ => {}
+        }
+    }
+    stack.last().copied()
+}
+
+/// Find the byte offset of the next outer scope's CLOSING delimiter
+/// after `pos`. Used by FixUp to step the cursor out one scope.
+fn next_closing_delim_after(text: &str, pos: usize) -> Option<usize> {
+    let mut depth: i32 = 0;
+    let bytes = text.as_bytes();
+    for i in pos..bytes.len() {
+        match bytes[i] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => {
+                if depth == 0 { return Some(i); }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Parse a markdown image reference `![alt](src)` from a line. Returns

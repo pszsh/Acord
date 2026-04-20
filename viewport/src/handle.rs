@@ -297,6 +297,41 @@ pub fn render(handle: &mut ViewportHandle) {
                         messages.push(Message::ToggleItalic);
                         consumed.push(ev_idx);
                     }
+                    "u" => {
+                        messages.push(Message::ToggleUnderline);
+                        consumed.push(ev_idx);
+                    }
+                    "x" if modifiers.shift() => {
+                        // Cmd+Shift+X: strikethrough (Cmd+S is reserved for save)
+                        messages.push(Message::ToggleStrike);
+                        consumed.push(ev_idx);
+                    }
+                    "." if modifiers.shift() => {
+                        // Cmd+> : blockquote prefix
+                        messages.push(Message::ToggleBlockquote);
+                        consumed.push(ev_idx);
+                    }
+                    "\"" | "'" => {
+                        // Cmd+" / Cmd+' wrap selection in matching quotes.
+                        let q: &'static str = if c.as_str() == "\"" { "\"" } else { "'" };
+                        messages.push(Message::WrapWith(q, q));
+                        consumed.push(ev_idx);
+                    }
+                    "9" | "(" => {
+                        // Cmd+9 (or Cmd+Shift+9 = Cmd+( ) wraps in parens.
+                        messages.push(Message::WrapWith("(", ")"));
+                        consumed.push(ev_idx);
+                    }
+                    "0" if modifiers.shift() => {
+                        // Cmd+Shift+0: reset zoom (moved off Cmd+0 to make
+                        // room for the FixUp catch-all).
+                        messages.push(Message::ZoomReset);
+                        consumed.push(ev_idx);
+                    }
+                    "0" => {
+                        messages.push(Message::FixUp);
+                        consumed.push(ev_idx);
+                    }
                     "e" => {
                         messages.push(Message::SmartEval);
                         consumed.push(ev_idx);
