@@ -71,7 +71,7 @@ impl AppMenu {
         let view = Submenu::new("View", true);
         view.append(&MenuItem::with_id("zoom_in", "Zoom In", true, Some(Accelerator::new(Some(Modifiers::CONTROL), Code::Equal)))).ok();
         view.append(&MenuItem::with_id("zoom_out", "Zoom Out", true, Some(Accelerator::new(Some(Modifiers::CONTROL), Code::Minus)))).ok();
-        view.append(&MenuItem::with_id("zoom_reset", "Reset Zoom", true, Some(Accelerator::new(Some(Modifiers::CONTROL), Code::Digit0)))).ok();
+        view.append(&MenuItem::with_id("zoom_reset", "Reset Zoom", true, Some(Accelerator::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Digit0)))).ok();
 
         menu.append(&file).ok();
         menu.append(&edit).ok();

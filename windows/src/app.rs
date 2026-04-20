@@ -1,4 +1,8 @@
-use std::ffi::{c_void, CString};
+use std::ffi::CString;
+#[cfg(target_os = "windows")]
+use std::ffi::c_void;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
@@ -26,6 +30,9 @@ pub struct App {
     cursor_pos: PhysicalPosition<f64>,
     scale: f32,
     modifiers: ModifiersState,
+    current_file: Option<PathBuf>,
+    last_autosave_attempt: Instant,
+    last_autosaved_hash: Option<u64>,
 }
 
 impl App {
@@ -38,6 +45,9 @@ impl App {
             cursor_pos: PhysicalPosition::new(0.0, 0.0),
             scale: 1.0,
             modifiers: ModifiersState::empty(),
+            current_file: None,
+            last_autosave_attempt: Instant::now(),
+            last_autosaved_hash: None,
         }
     }
 
@@ -106,28 +116,39 @@ impl App {
                     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("Acord");
                     w.set_title(&format!("{name} - Acord"));
                 }
+                self.current_file = Some(path);
+                self.last_autosaved_hash = None;
             }
         }
     }
 
-    fn save_file(&self) {
-        self.save_file_as();
+    fn save_file(&mut self) {
+        match self.current_file.clone() {
+            Some(path) => self.write_to(&path),
+            None => self.save_file_as(),
+        }
     }
 
-    fn save_file_as(&self) {
+    fn save_file_as(&mut self) {
         let dialog = rfd::FileDialog::new()
             .add_filter("Markdown", &["md"])
             .add_filter("All Files", &["*"])
             .set_file_name("note.md");
         if let Some(path) = dialog.save_file() {
-            let text_ptr = viewport_get_text(self.handle);
-            if !text_ptr.is_null() {
-                let text = unsafe { std::ffi::CStr::from_ptr(text_ptr) }
-                    .to_string_lossy()
-                    .into_owned();
-                viewport_free_string(text_ptr);
-                let _ = std::fs::write(&path, text);
-            }
+            self.write_to(&path);
+            self.current_file = Some(path);
+        }
+    }
+
+    fn write_to(&mut self, path: &std::path::Path) {
+        let text_ptr = viewport_get_text(self.handle);
+        if text_ptr.is_null() { return; }
+        let text = unsafe { std::ffi::CStr::from_ptr(text_ptr) }
+            .to_string_lossy()
+            .into_owned();
+        viewport_free_string(text_ptr);
+        if std::fs::write(path, &text).is_ok() {
+            self.last_autosaved_hash = Some(text_hash(&text));
         }
     }
 
@@ -136,6 +157,35 @@ impl App {
         viewport_set_text(self.handle, empty.as_ptr());
         if let Some(w) = &self.window {
             w.set_title("Acord");
+        }
+        self.current_file = None;
+        self.last_autosaved_hash = None;
+    }
+
+    /// Hash-gated autosave. Mirrors the macOS Swift `persistViewportToNotesDir`:
+    /// fires on a poll cadence, skips the disk write when the buffer hash
+    /// matches the last saved value. Without the hash gate this would rewrite
+    /// the note every poll tick (~MB/s on a busy doc).
+    fn try_autosave(&mut self) {
+        if self.handle.is_null() { return; }
+        let text_ptr = viewport_get_text(self.handle);
+        if text_ptr.is_null() { return; }
+        let text = unsafe { std::ffi::CStr::from_ptr(text_ptr) }
+            .to_string_lossy()
+            .into_owned();
+        viewport_free_string(text_ptr);
+
+        let hash = text_hash(&text);
+        if Some(hash) == self.last_autosaved_hash { return; }
+
+        let path = self.current_file.clone().unwrap_or_else(|| {
+            self.config.notes_dir().join("Untitled.md")
+        });
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if std::fs::write(&path, &text).is_ok() {
+            self.last_autosaved_hash = Some(hash);
         }
     }
 
@@ -299,6 +349,13 @@ impl ApplicationHandler for App {
         while let Some(action) = AppMenu::poll() {
             self.dispatch_menu(action, _event_loop);
         }
+        // Hash-gated autosave on a 500ms cadence. The hash skip means
+        // an idle doc doesn't tick the disk; a typing doc writes once
+        // per cadence regardless of keystroke rate.
+        if self.last_autosave_attempt.elapsed() >= Duration::from_millis(500) {
+            self.last_autosave_attempt = Instant::now();
+            self.try_autosave();
+        }
         // Request a redraw if the viewport has pending work.
         if let Some(w) = &self.window {
             if !self.handle.is_null() {
@@ -311,6 +368,13 @@ impl ApplicationHandler for App {
             }
         }
     }
+}
+
+fn text_hash(s: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut h);
+    h.finish()
 }
 
 /// Map winit logical keys to the macOS-style keycodes the bridge expects.
@@ -357,6 +421,10 @@ fn encode_modifiers(state: ModifiersState) -> u32 {
     if state.control_key() { flags |= 1 << 18; }
     if state.alt_key() { flags |= 1 << 19; }
     if state.super_key() { flags |= 1 << 20; }
+    // Mirror Ctrl→LOGO so the viewport's `modifiers.logo()` shortcut arms fire.
+    // Matches `decode_winit_modifiers` below; without this, only menu-accelerated
+    // shortcuts (B/I/T) reach the viewport on Windows.
+    if state.control_key() { flags |= 1 << 20; }
     flags
 }
 

@@ -48,10 +48,11 @@ pub struct ViewportHandle {
     pub needs_redraw: bool,
 }
 
-/// Install a panic hook that flushes a full backtrace to stderr before
-/// the process aborts. Called once on first viewport_create. Without this
-/// the host (Swift / winit) often eats the panic message and the user sees
-/// only a silent SIGABRT with no `.ips` file.
+/// Install a panic hook that flushes a full backtrace to stderr AND to
+/// `~/.acord/crash.log` before the process aborts. Called once on first
+/// viewport_create. Without the file fallback, the Windows release build
+/// (`#![windows_subsystem = "windows"]`) detaches the console and stderr
+/// goes nowhere — users get a silent crash with no diagnostic surface.
 fn install_panic_hook() {
     use std::sync::Once;
     static ONCE: Once = Once::new();
@@ -59,16 +60,43 @@ fn install_panic_hook() {
         let prior = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             use std::io::Write;
-            let mut err = std::io::stderr().lock();
-            let _ = writeln!(err, "===== ACORD RUST PANIC =====");
-            let _ = writeln!(err, "{}", info);
             let bt = std::backtrace::Backtrace::force_capture();
-            let _ = writeln!(err, "{}", bt);
-            let _ = writeln!(err, "============================");
-            let _ = err.flush();
+            let header = "===== ACORD RUST PANIC =====";
+            let footer = "============================";
+            {
+                let mut err = std::io::stderr().lock();
+                let _ = writeln!(err, "{}", header);
+                let _ = writeln!(err, "{}", info);
+                let _ = writeln!(err, "{}", bt);
+                let _ = writeln!(err, "{}", footer);
+                let _ = err.flush();
+            }
+            if let Some(home) = dirs::home_dir() {
+                let dir = home.join(".acord");
+                let _ = std::fs::create_dir_all(&dir);
+                let path = dir.join("crash.log");
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true).append(true).open(&path)
+                {
+                    let _ = writeln!(f, "{} {}", header, chrono_now());
+                    let _ = writeln!(f, "{}", info);
+                    let _ = writeln!(f, "{}", bt);
+                    let _ = writeln!(f, "{}", footer);
+                }
+            }
             prior(info);
         }));
     });
+}
+
+/// Best-effort timestamp for the crash log header. Avoids pulling chrono
+/// for one line — uses SystemTime::now() epoch seconds as a stable suffix.
+fn chrono_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| format!("(epoch {}s)", d.as_secs()))
+        .unwrap_or_else(|_| String::from("(time unavailable)"))
 }
 
 #[unsafe(no_mangle)]
