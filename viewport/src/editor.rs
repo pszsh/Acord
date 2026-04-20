@@ -145,6 +145,14 @@ pub enum Message {
     /// Explicitly close the context menu (Escape key, etc.). Most other
     /// messages auto-close it via `update()`'s top-of-loop drop logic.
     HideContextMenu,
+    /// Push a literal string into the clipboard out-channel. Used by the
+    /// table spillover popup's copy button and by Cmd+C-on-selected-cell
+    /// where the value is already in hand at dispatch time.
+    CopyLiteral(String),
+    /// Cmd+C while the focused block is a table — copy the current selection
+    /// (or the spillover cell, if open) as TSV. Dispatched from handle.rs
+    /// when the keyboard event would otherwise reach a non-cell-edit context.
+    CopyFocusedTableSelection,
     /// Escape from cell edit mode. The cell stays selected (highlighted) but
     /// goes back to the static-text rendering — same as the Excel/Numbers
     /// gesture for "stop editing this cell".
@@ -1454,6 +1462,31 @@ impl EditorState {
         !tb.is_eval_result && tb.focused_cell.is_some()
     }
 
+    /// True when handle.rs should intercept Cmd+C and route it to the
+    /// table-cell copy path instead of letting iced's text widget handle it.
+    /// Conditions: focused block is a table; not currently editing a cell
+    /// (cell-edit mode delegates to text_input's own copy); and either a
+    /// selection is non-empty or a spillover popup is open.
+    pub(crate) fn should_intercept_table_copy(&self) -> bool {
+        if self.editing.is_some() { return false; }
+        let Some(block) = self.block_at(self.focused_block) else { return false; };
+        let Some(tb) = block.as_any().downcast_ref::<TableBlock>() else { return false; };
+        !tb.selection.is_empty() || tb.spillover.is_some()
+    }
+
+    /// Build the clipboard payload from the focused table — selection takes
+    /// precedence over spillover; spillover provides the single-cell payload
+    /// when no explicit selection exists. None if neither applies.
+    fn copy_focused_table_selection(&self) -> Option<String> {
+        let block = self.block_at(self.focused_block)?;
+        let tb = block.as_any().downcast_ref::<TableBlock>()?;
+        if !tb.selection.is_empty() {
+            return tb.copy_selection_payload();
+        }
+        let (r, c) = tb.spillover?;
+        tb.rows.get(r).and_then(|row| row.get(c)).cloned()
+    }
+
     pub fn set_lang_from_ext(&mut self, ext: &str) {
         self.lang = lang_from_extension(ext);
     }
@@ -1478,6 +1511,16 @@ impl EditorState {
                 self.copy_inline_result(bid, line);
             }
         }
+        // Table hover-to-spillover dwell: each table polls its own armed
+        // timer and opens the popup once the 3s threshold passes.
+        let block_ids: Vec<crate::selection::BlockId> = self.layout.clone();
+        for id in block_ids {
+            if let Some(block) = self.registry.get_mut(&id) {
+                if let Some(tb) = block.as_any_mut().downcast_mut::<TableBlock>() {
+                    tb.check_hover_spillover();
+                }
+            }
+        }
     }
 
     /// True if an eval debounce is still pending. Used by handle::render to keep
@@ -1486,6 +1529,11 @@ impl EditorState {
     pub fn has_pending_eval(&self) -> bool {
         self.eval_dirty
             || self.inline_press.as_ref().is_some_and(|s| !s.fired_long_press)
+            || self.layout.iter().any(|id| {
+                self.registry.get(id)
+                    .and_then(|b| b.as_any().downcast_ref::<TableBlock>())
+                    .is_some_and(|tb| tb.has_pending_hover())
+            })
     }
 
     fn reparse(&mut self) {
@@ -3224,6 +3272,14 @@ impl EditorState {
             Message::HideContextMenu => {
                 self.context_menu = None;
             }
+            Message::CopyLiteral(text) => {
+                self.pending_clipboard = Some(text);
+            }
+            Message::CopyFocusedTableSelection => {
+                if let Some(text) = self.copy_focused_table_selection() {
+                    self.pending_clipboard = Some(text);
+                }
+            }
             Message::DeleteAllBlocks => {
                 // Cmd+Backspace with the whole document selected — wipe to a
                 // single empty text block. Same destructive scope as
@@ -3568,23 +3624,26 @@ impl EditorState {
                 } else {
                     let top_pad = if bi == 0 { title_bar_h } else { 0.0 };
                     let is_focused = bi == self.focused_block;
-                    let actual_lines = tb.content.line_count().max(1);
                     let anchored_items = self.build_anchored_items(tb.id);
-                    let items_h: f32 = anchored_items.iter().map(|a| a.height).sum();
-                    let editor_h = (actual_lines as f32) * line_h + top_pad + 8.0 + items_h;
                     let cursor_line = tb.content.cursor().position.line;
                     let line_count = tb.content.line_count();
                     let text = tb.content.text();
                     let decors = compute_line_decors(&text);
                     let this_global_line = global_line;
                     global_line += line_count;
+                    let _ = line_h; // text_widget::layout owns the height now
 
+                    // Length::Shrink lets text_widget::layout publish the
+                    // actual rendered height (visual_rows × line_h + items
+                    // + padding). Computing it here from logical line count
+                    // undercounts when wrap fires, which leaves the next
+                    // block sitting on top of this block's tail.
                     let editor = text_widget::TextEditor::new(&tb.content)
                         .id(block_editor_id(tb.id))
                         .on_action(move |action| Message::BlockAction(block_idx, action))
                         .font(syntax::EDITOR_FONT)
                         .size(self.font_size)
-                        .height(Length::Fixed(editor_h))
+                        .height(Length::Shrink)
                         .padding(Padding { top: top_pad, right: 8.0, bottom: 4.0, left: 8.0 })
                         .wrapping(Wrapping::Word)
                         .key_binding(macos_key_binding)
@@ -3732,11 +3791,108 @@ impl EditorState {
         // anywhere outside the menu hit the main content (still alive on
         // the layer below) AND auto-clear the menu via update()'s top-of-loop
         // drop logic.
-        if let Some(menu_state) = &self.context_menu {
-            iced_widget::stack![inner, self.context_menu_view(menu_state)].into()
+        let with_ctx: Element<'_, Message, Theme, iced_wgpu::Renderer> =
+            if let Some(menu_state) = &self.context_menu {
+                iced_widget::stack![inner, self.context_menu_view(menu_state)].into()
+            } else {
+                inner
+            };
+
+        // Spillover popup overlay — opens when wrap is off and the user
+        // clicks a clipped cell. Only one is open at a time per editor.
+        if let Some(popup) = self.spillover_view() {
+            iced_widget::stack![with_ctx, popup].into()
         } else {
-            inner
+            with_ctx
         }
+    }
+
+    /// Find the first table block with an open spillover and render its
+    /// popup. Returns None when no spillover is active. The popup is
+    /// fixed-positioned at the top-center of the viewport — close enough
+    /// for now; cell-anchored positioning is a polish pass away.
+    fn spillover_view(&self) -> Option<Element<'_, Message, Theme, iced_wgpu::Renderer>> {
+        let p = palette::current();
+        let cell_text = self.layout.iter()
+            .filter_map(|id| self.registry.get(id))
+            .find_map(|block| {
+                let tb = block.as_any().downcast_ref::<TableBlock>()?;
+                let (r, c) = tb.spillover?;
+                tb.rows.get(r).and_then(|row| row.get(c)).cloned()
+            })?;
+
+        let copy_btn = iced_widget::button(
+            iced_widget::text("Copy")
+                .size(11.0)
+                .font(syntax::EDITOR_FONT)
+        )
+        .padding(Padding { top: 2.0, right: 8.0, bottom: 2.0, left: 8.0 })
+        .style(context_menu_item_style)
+        .on_press(Message::CopyLiteral(cell_text.clone()));
+
+        let close_btn = iced_widget::button(
+            iced_widget::text("\u{2715}")
+                .size(11.0)
+                .font(syntax::EDITOR_FONT)
+        )
+        .padding(Padding { top: 2.0, right: 8.0, bottom: 2.0, left: 8.0 })
+        .style(context_menu_item_style)
+        .on_press(Message::FocusedTableOp(TableMessage::CloseSpillover));
+
+        let header = iced_widget::row![
+            iced_widget::Space::new().width(Length::Fill).height(Length::Shrink),
+            copy_btn,
+            close_btn,
+        ]
+        .spacing(4.0)
+        .align_y(iced_wgpu::core::Alignment::Center);
+
+        let body = iced_widget::scrollable(
+            iced_widget::container(
+                iced_widget::text(cell_text)
+                    .size(self.font_size)
+                    .font(syntax::EDITOR_FONT)
+                    .color(p.text)
+            )
+            .padding(Padding { top: 6.0, right: 12.0, bottom: 6.0, left: 12.0 })
+            .width(Length::Fill)
+        )
+        .height(Length::Fixed(220.0));
+
+        let popup = iced_widget::container(
+            iced_widget::column![header, body].spacing(2.0)
+        )
+        .padding(Padding { top: 6.0, right: 6.0, bottom: 6.0, left: 6.0 })
+        .width(Length::Fixed(420.0))
+        .style(move |_theme: &Theme| iced_widget::container::Style {
+            background: Some(Background::Color(p.surface0)),
+            border: Border {
+                color: p.surface1,
+                width: 1.0,
+                radius: 4.0.into(),
+            },
+            text_color: Some(p.text),
+            shadow: iced_wgpu::core::Shadow::default(),
+            snap: false,
+        });
+
+        // Position via Shrink-sized leading spacers (same trick as the
+        // context menu overlay) — Fill+padding triggers a viewport-wide
+        // re-layout on every popup open and steals events.
+        let popup_el: Element<'_, Message, Theme, iced_wgpu::Renderer> = popup.into();
+        let v_spacer = iced_widget::Space::new()
+            .width(Length::Shrink)
+            .height(Length::Fixed(60.0));
+        let h_spacer = iced_widget::Space::new()
+            .width(Length::Fixed(120.0))
+            .height(Length::Shrink);
+        Some(
+            iced_widget::column![
+                v_spacer,
+                iced_widget::row![h_spacer, popup_el]
+            ]
+            .into()
+        )
     }
 
     /// Get (after_line, height) offset pairs for a block's anchored items.
@@ -3980,6 +4136,15 @@ impl EditorState {
                 "Select all",
                 Message::TableMsg(block_idx, TableMessage::SelectAll),
             ),
+            {
+                let wrap_on = self.table_block_at(block_idx)
+                    .map(|tb| tb.wrap)
+                    .unwrap_or(true);
+                item(
+                    if wrap_on { "Wrap: on" } else { "Wrap: off" },
+                    Message::TableMsg(block_idx, TableMessage::ToggleWrap),
+                )
+            },
             item("Delete table", Message::DeleteCurrentTable),
         ];
 

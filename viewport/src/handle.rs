@@ -332,6 +332,17 @@ pub fn render(handle: &mut ViewportHandle) {
                         messages.push(Message::FixUp);
                         consumed.push(ev_idx);
                     }
+                    "c" => {
+                        // Table cell copy: when the focused block is a table
+                        // with a selection (or an open spillover popup), Cmd+C
+                        // copies the cell payload before iced's text widget
+                        // sees the event. Otherwise let it fall through so
+                        // text-block / cell-edit copy keep working.
+                        if handle.state.should_intercept_table_copy() {
+                            messages.push(Message::CopyFocusedTableSelection);
+                            consumed.push(ev_idx);
+                        }
+                    }
                     "e" => {
                         messages.push(Message::SmartEval);
                         consumed.push(ev_idx);

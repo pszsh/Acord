@@ -32,6 +32,8 @@ pub struct BlockInfo {
 /// - H1 -> root module (is_root = true)
 /// - H2 -> close current, start named module
 /// - HR -> close current, start unnamed module
+/// - HR immediately followed by H1/H2 -> absorbed into the heading module
+///   so the divider counts as decoration, not its own dangling block.
 /// - Everything else -> append to current module
 ///
 /// Unnamed modules are auto-named from their first `fn` or `let`
@@ -49,29 +51,21 @@ pub fn compute_modules(infos: &[BlockInfo]) -> Vec<Module> {
 
     for info in infos {
         match (info.kind_tag, info.heading_level) {
-            ("heading", 1) => {
-                if seen_any || !current.block_ids.is_empty() {
+            ("heading", 1) | ("heading", 2) => {
+                let absorbed_hr = take_dangling_hr(&current, infos);
+                if absorbed_hr.is_none() && (seen_any || !current.block_ids.is_empty()) {
                     finalize_unnamed(&mut current, &mut unnamed_counter, infos);
                     modules.push(current);
                 }
-                current = Module {
-                    name: normalize_name(&info.heading_text),
-                    heading_block: Some(info.id),
-                    block_ids: vec![info.id],
-                    is_root: true,
+                let block_ids = match absorbed_hr {
+                    Some(hr_id) => vec![hr_id, info.id],
+                    None => vec![info.id],
                 };
-                seen_any = true;
-            }
-            ("heading", 2) => {
-                if seen_any || !current.block_ids.is_empty() {
-                    finalize_unnamed(&mut current, &mut unnamed_counter, infos);
-                    modules.push(current);
-                }
                 current = Module {
                     name: normalize_name(&info.heading_text),
                     heading_block: Some(info.id),
-                    block_ids: vec![info.id],
-                    is_root: false,
+                    block_ids,
+                    is_root: info.heading_level == 1,
                 };
                 seen_any = true;
             }
@@ -100,6 +94,19 @@ pub fn compute_modules(infos: &[BlockInfo]) -> Vec<Module> {
     }
 
     modules
+}
+
+/// Returns the HR block id if `current` is a freshly-opened HR-only module
+/// (one block, no heading) — meaning the HR immediately precedes the caller's
+/// heading and should be folded into it. None otherwise.
+fn take_dangling_hr(current: &Module, infos: &[BlockInfo]) -> Option<BlockId> {
+    if current.block_ids.len() != 1 || current.heading_block.is_some() {
+        return None;
+    }
+    let only_id = current.block_ids[0];
+    infos.iter()
+        .find(|i| i.id == only_id && i.kind_tag == "hr")
+        .map(|i| i.id)
 }
 
 /// If a module has no name, derive one from its first `fn`/`let` declaration.
@@ -332,6 +339,61 @@ mod tests {
     fn empty_input() {
         let modules = compute_modules(&[]);
         assert!(modules.is_empty());
+    }
+
+    #[test]
+    fn hr_collapses_into_following_h2() {
+        let infos = vec![
+            info(1, "text", 0, "", "preamble"),
+            info(2, "hr", 0, "", ""),
+            info(3, "heading", 2, "Section", ""),
+            info(4, "text", 0, "", "content"),
+        ];
+        let modules = compute_modules(&infos);
+        assert_eq!(modules.len(), 2);
+        assert_eq!(modules[0].block_ids, vec![1]);
+        assert_eq!(modules[1].name, "section");
+        assert_eq!(modules[1].block_ids, vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn hr_collapses_into_following_h1() {
+        let infos = vec![
+            info(1, "text", 0, "", "preamble"),
+            info(2, "hr", 0, "", ""),
+            info(3, "heading", 1, "Title", ""),
+        ];
+        let modules = compute_modules(&infos);
+        assert_eq!(modules.len(), 2);
+        assert_eq!(modules[1].name, "title");
+        assert!(modules[1].is_root);
+        assert_eq!(modules[1].block_ids, vec![2, 3]);
+    }
+
+    #[test]
+    fn hr_does_not_collapse_when_followed_by_text() {
+        let infos = vec![
+            info(1, "hr", 0, "", ""),
+            info(2, "text", 0, "", "let total = 1"),
+        ];
+        let modules = compute_modules(&infos);
+        assert_eq!(modules.len(), 1);
+        assert_eq!(modules[0].block_ids, vec![1, 2]);
+        assert_eq!(modules[0].name, "total");
+    }
+
+    #[test]
+    fn consecutive_hrs_only_last_is_absorbed() {
+        let infos = vec![
+            info(1, "hr", 0, "", ""),
+            info(2, "hr", 0, "", ""),
+            info(3, "heading", 2, "Section", ""),
+        ];
+        let modules = compute_modules(&infos);
+        assert_eq!(modules.len(), 2);
+        assert_eq!(modules[0].block_ids, vec![1]);
+        assert_eq!(modules[1].name, "section");
+        assert_eq!(modules[1].block_ids, vec![2, 3]);
     }
 
     #[test]

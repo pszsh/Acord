@@ -1,4 +1,5 @@
 use iced_wgpu::core::widget::Id as WidgetId;
+use iced_wgpu::core::text::Wrapping;
 use iced_wgpu::core::{
     Background, Border, Color, Element, Font, Length, Padding, Point, Shadow, Theme,
 };
@@ -17,6 +18,12 @@ use crate::syntax::EDITOR_FONT;
 
 const MIN_COL_WIDTH: f32 = 60.0;
 const DEFAULT_COL_WIDTH: f32 = 120.0;
+/// Sanity cap for double-click auto-fit. Drag past it for explicit override.
+const AUTO_FIT_MAX: f32 = 600.0;
+/// Approximate monospace glyph advance at the editor's default font size.
+/// Used when the renderer's actual font_size isn't available (e.g. during
+/// table construction). Tracks `font_size * 0.6` for size 13.
+const APPROX_CHAR_W: f32 = 7.8;
 const CELL_PADDING: Padding = Padding {
     top: 2.0,
     right: 8.0,
@@ -30,7 +37,6 @@ const PLUS_BUTTON_THICKNESS: f32 = 14.0;
 /// 4px vertical padding + 2px border ≈ 23.
 const ROW_HEIGHT_ESTIMATE: f32 = 23.0;
 const MIN_ROW_HEIGHT: f32 = 18.0;
-#[allow(dead_code)]
 const ROW_RESIZE_HANDLE_HEIGHT: f32 = 3.0;
 /// Vertical gap between rows. Slightly tighter than RESIZE_HANDLE_WIDTH —
 /// the horizontal gap stays at 4 so the resize handle has enough hit area.
@@ -107,6 +113,21 @@ pub enum TableMessage {
     BeginColReorder(usize),
     BeginRowReorder(usize),
     EndDrag,
+    /// Double-click on the column resize handle: fit width to the widest
+    /// cell content in the column. f32 carries the current font_size so the
+    /// pixel width tracks zoom level.
+    AutoFitCol(usize, f32),
+    /// Toggle the per-table word-wrap mode. Wrap on (default): rows grow to
+    /// fit; nothing clips. Wrap off: cells clip; spillover popup reveals
+    /// content on click or 3s hover.
+    ToggleWrap,
+    /// Open the spillover popup for a cell. Replaces any existing spillover
+    /// (only one open per table at a time). Click on a clipped cell when
+    /// `wrap == false`.
+    OpenSpillover(usize, usize),
+    /// Close the active spillover popup. Click outside, ESC, or any cell
+    /// selection change.
+    CloseSpillover,
     /// Click on a column-header sort arrow: cycles that column through
     /// Neutral → Asc → Desc → Neutral and re-applies the composite sort.
     CycleSort(usize),
@@ -170,6 +191,19 @@ pub struct TableBlock {
     /// the dominant sort key; later entries break ties within groups of
     /// equal dominant values. Empty = no sort active (visual neutral).
     pub sort_priority: Vec<(usize, SortDir)>,
+    /// When true (default), cell text word-wraps and each row grows to fit
+    /// the tallest wrapped cell — no content ever clips. When false, content
+    /// is hard-clipped at the cell bounds and the spillover popup reveals
+    /// the full text on click or hover.
+    pub wrap: bool,
+    /// Currently spilled-over cell, if any. Only one popup at a time per
+    /// table. Set by click or 3s hover when `wrap == false`.
+    pub spillover: Option<(usize, usize)>,
+    /// Cell currently being hovered with the dwell timer running. Captured
+    /// on CellEnter; consumed by `tick_hover` after the 3s threshold to
+    /// open the spillover popup. Cleared on any meaningful interaction
+    /// (click, edit, drag, scroll) so a brief mouseover never triggers.
+    pub hover_armed: Option<(usize, usize, std::time::Instant)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,7 +228,8 @@ impl TableBlock {
         let col_count = rows.iter().map(|r| r.len()).max().unwrap_or(0);
         let col_widths = col_widths_override.unwrap_or_else(|| {
             // For eval result tables, size columns to fit content; for markdown
-            // tables, use a uniform default width.
+            // tables, fit each column to its header so the new wrap-on default
+            // gives short headers a tight column and lets long body text wrap.
             if is_eval_result {
                 (0..col_count)
                     .map(|ci| {
@@ -207,7 +242,15 @@ impl TableBlock {
                     })
                     .collect()
             } else {
-                vec![DEFAULT_COL_WIDTH; col_count]
+                let header = rows.first().map(|r| r.as_slice()).unwrap_or(&[]);
+                (0..col_count)
+                    .map(|ci| {
+                        let chars = header.get(ci).map(|s| s.chars().count()).unwrap_or(0);
+                        let raw = chars as f32 * APPROX_CHAR_W
+                            + CELL_PADDING.left + CELL_PADDING.right;
+                        raw.max(DEFAULT_COL_WIDTH).min(AUTO_FIT_MAX)
+                    })
+                    .collect()
             }
         });
         let row_count = rows.len();
@@ -234,7 +277,82 @@ impl TableBlock {
             last_cursor_x: 0.0,
             last_cursor_y: 0.0,
             sort_priority: Vec::new(),
+            wrap: true,
+            spillover: None,
+            hover_armed: None,
         }
+    }
+
+    /// 3s dwell threshold for hover-to-spillover. Independent of the eval
+    /// debounce so a slow-typing user doesn't accidentally trigger popups.
+    pub fn check_hover_spillover(&mut self) -> bool {
+        if self.wrap { self.hover_armed = None; return false; }
+        let Some((r, c, started)) = self.hover_armed else { return false; };
+        if started.elapsed().as_millis() < 3000 { return false; }
+        if self.spillover == Some((r, c)) { self.hover_armed = None; return false; }
+        if r >= self.rows.len() || c >= self.col_widths.len() {
+            self.hover_armed = None;
+            return false;
+        }
+        self.spillover = Some((r, c));
+        self.hover_armed = None;
+        true
+    }
+
+    /// Has a hover dwell timer running. Used by `has_pending_eval`-equivalent
+    /// to keep the vsync loop ticking until the 3s threshold fires.
+    pub fn has_pending_hover(&self) -> bool {
+        !self.wrap && self.hover_armed.is_some()
+    }
+
+    /// Build the canonical clipboard payload for the current selection.
+    /// Single cell: just the cell text. Multiple cells: TSV — tabs between
+    /// columns, newlines between rows. Excel/Numbers/Sheets parse this
+    /// natively when pasted back in. Returns None if nothing is selected.
+    pub fn copy_selection_payload(&self) -> Option<String> {
+        if self.selection.is_empty() {
+            return None;
+        }
+        if self.selection.len() == 1 {
+            let &(r, c) = self.selection.iter().next()?;
+            return self.rows.get(r).and_then(|row| row.get(c)).cloned();
+        }
+        let r_min = self.selection.iter().map(|&(r, _)| r).min()?;
+        let r_max = self.selection.iter().map(|&(r, _)| r).max()?;
+        let c_min = self.selection.iter().map(|&(_, c)| c).min()?;
+        let c_max = self.selection.iter().map(|&(_, c)| c).max()?;
+        let mut lines: Vec<String> = Vec::with_capacity(r_max - r_min + 1);
+        for r in r_min..=r_max {
+            let mut cells: Vec<String> = Vec::with_capacity(c_max - c_min + 1);
+            for c in c_min..=c_max {
+                let cell = if self.selection.contains(&(r, c)) {
+                    self.rows.get(r).and_then(|row| row.get(c)).cloned().unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                cells.push(cell);
+            }
+            lines.push(cells.join("\t"));
+        }
+        Some(lines.join("\n"))
+    }
+
+    /// Resize `col` to fit its widest cell content (header + body) at
+    /// `font_size`. Width = max char count × monospace char width + horizontal
+    /// padding, clamped to [MIN_COL_WIDTH, AUTO_FIT_MAX]. The cap keeps a
+    /// pathological cell from blowing the table off-screen — drag past it
+    /// for explicit override.
+    pub fn auto_fit_col(&mut self, col: usize, font_size: f32) {
+        if col >= self.col_widths.len() { return; }
+        let max_chars = self.rows.iter()
+            .filter_map(|r| r.get(col))
+            .map(|s| s.chars().count())
+            .max()
+            .unwrap_or(0);
+        let char_w = font_size * 0.6;
+        let pad = CELL_PADDING.left + CELL_PADDING.right;
+        let raw = max_chars as f32 * char_w + pad;
+        self.col_widths[col] = raw.max(MIN_COL_WIDTH).min(AUTO_FIT_MAX);
     }
 
     /// Cycle the sort state of `col`: Neutral → Asc → Desc → Neutral.
@@ -434,6 +552,19 @@ impl TableBlock {
                 self.focused_cell = Some((row, col));
                 self.is_active = true;
                 self.table_selected = false;
+                self.hover_armed = None;
+                // Wrap-off mode: a click that lands on a different cell
+                // re-targets the spillover popup. Clicking the same cell
+                // again toggles it closed so the user can dismiss without
+                // an explicit ESC.
+                if !self.wrap {
+                    self.spillover = match self.spillover {
+                        Some(prev) if prev == (row, col) => None,
+                        _ => Some((row, col)),
+                    };
+                } else {
+                    self.spillover = None;
+                }
             }
             TableMessage::EditCell(row, col) => {
                 // Double click — selected AND editing. The editor's
@@ -442,6 +573,8 @@ impl TableBlock {
                 // next frame.
                 self.focused_cell = Some((row, col));
                 self.is_active = true;
+                self.hover_armed = None;
+                self.spillover = None;
             }
             TableMessage::DeleteTable => {
                 // Handled at the editor level — the TableMsg arm in
@@ -487,6 +620,20 @@ impl TableBlock {
                 // which is a tiny per-frame cost).
                 if self.drag_select_start.is_some() {
                     self.apply_drag_to(row, col);
+                }
+                // Hover-to-spillover dwell: only meaningful with wrap off
+                // (clipped cells are the ones that benefit). Re-arming on a
+                // different cell resets the timer; same-cell re-entry leaves
+                // the existing timer alone so a tiny twitch doesn't restart
+                // the dwell.
+                if !self.wrap {
+                    let already_armed = matches!(
+                        self.hover_armed,
+                        Some((r, c, _)) if r == row && c == col
+                    );
+                    if !already_armed {
+                        self.hover_armed = Some((row, col, std::time::Instant::now()));
+                    }
                 }
             }
             TableMessage::AddRow => {
@@ -652,6 +799,28 @@ impl TableBlock {
                     target: row,
                     start_y: self.last_cursor_y,
                 });
+            }
+            TableMessage::AutoFitCol(col, font_size) => {
+                if self.read_only || col >= self.col_widths.len() {
+                    return;
+                }
+                self.auto_fit_col(col, font_size);
+            }
+            TableMessage::ToggleWrap => {
+                if self.read_only { return; }
+                self.wrap = !self.wrap;
+                // Switching to wrap-on auto-closes any open spillover —
+                // wrapped content is no longer clipped, so the popup is moot.
+                if self.wrap { self.spillover = None; }
+            }
+            TableMessage::OpenSpillover(row, col) => {
+                if self.wrap { return; }
+                if row < self.rows.len() && col < self.col_widths.len() {
+                    self.spillover = Some((row, col));
+                }
+            }
+            TableMessage::CloseSpillover => {
+                self.spillover = None;
             }
             TableMessage::CycleSort(col) => {
                 if self.read_only || col >= self.col_widths.len() {
@@ -1187,6 +1356,7 @@ where
 
     for (ri, row) in block.rows.iter().enumerate() {
         let is_header = ri == 0;
+        let row_h = compute_row_height(block, ri, row, font_size, row_h);
         let mut row_cells: Vec<Element<'a, Message, Theme, iced_wgpu::Renderer>> = Vec::new();
 
         if reserve_chrome {
@@ -1268,7 +1438,13 @@ where
                 if !read_only {
                     input = input.on_input(move |val| on_msg(TableMessage::CellChanged(r, c, val)));
                 }
-                input.into()
+                // Pin the wrapper to row_h so a manually-resized row keeps its
+                // height when the user double-clicks to enter edit mode —
+                // text_input alone would snap back to its natural font-size height.
+                container(input)
+                    .width(Length::Fixed(width))
+                    .height(Length::Fixed(row_h))
+                    .into()
             } else {
                 // Selected-but-not-editing or fully unfocused cell. Renders
                 // as a static text widget inside a container styled to match
@@ -1295,7 +1471,8 @@ where
                 let display = text(display_text)
                     .size(font_size)
                     .font(font)
-                    .color(oklab::lighten_for_size(label_color, font_size));
+                    .color(oklab::lighten_for_size(label_color, font_size))
+                    .wrapping(if block.wrap { Wrapping::Word } else { Wrapping::None });
 
                 let container_style = move |_theme: &Theme| {
                     let ws = palette::widget_surface();
@@ -1342,6 +1519,7 @@ where
                     )
                     .interaction(Interaction::ResizingHorizontally)
                     .on_press(on_msg(TableMessage::BeginColResize(handle_col)))
+                    .on_double_click(on_msg(TableMessage::AutoFitCol(handle_col, font_size)))
                     .into();
                 row_cells.push(handle);
             } else {
@@ -1357,6 +1535,26 @@ where
         let row_el: Element<'a, Message, Theme, iced_wgpu::Renderer> =
             iced_widget::row(row_cells).spacing(0.0).into();
         col_elements.push(row_el);
+
+        // Row resize band — 3px hit area below each row, drags row height.
+        // Skipped for read_only tables (eval results aren't meant to be
+        // structurally edited).
+        if !read_only {
+            let resize_row = ri;
+            let band_w: f32 = (if reserve_chrome { ROW_NUMBER_WIDTH } else { 0.0 })
+                + block.col_widths.iter().sum::<f32>()
+                + RESIZE_HANDLE_WIDTH * block.col_widths.len() as f32;
+            let band: Element<'a, Message, Theme, iced_wgpu::Renderer> =
+                MouseArea::new(
+                    container(text(" "))
+                        .width(Length::Fixed(band_w))
+                        .height(Length::Fixed(ROW_RESIZE_HANDLE_HEIGHT))
+                )
+                .interaction(Interaction::ResizingVertically)
+                .on_press(on_msg(TableMessage::BeginRowResize(resize_row)))
+                .into();
+            col_elements.push(band);
+        }
     }
 
     let table: Element<'a, Message, Theme, iced_wgpu::Renderer> =
@@ -1428,6 +1626,44 @@ where
     };
 
     outer
+}
+
+/// Wrap-aware row height. Manual override wins. Then if wrap is on, fit to
+/// the tallest wrapped cell (chars × char_w / col_width gives an approximate
+/// line count). Otherwise fall back to the default single-line row height.
+fn compute_row_height(
+    block: &TableBlock,
+    ri: usize,
+    row: &[String],
+    font_size: f32,
+    default_h: f32,
+) -> f32 {
+    if let Some(h) = block.row_heights.get(ri).copied().flatten() {
+        return h;
+    }
+    if !block.wrap {
+        return default_h;
+    }
+    let line_h = font_size * 1.3;
+    let char_w = font_size * 0.6;
+    let pad_h = CELL_PADDING.top + CELL_PADDING.bottom + 2.0;
+    let max_lines = row.iter().enumerate()
+        .map(|(ci, cell)| {
+            let w = block.col_widths.get(ci).copied().unwrap_or(DEFAULT_COL_WIDTH);
+            let usable_w = (w - CELL_PADDING.left - CELL_PADDING.right).max(1.0);
+            let chars_per_line = (usable_w / char_w).floor().max(1.0) as usize;
+            // Honor explicit \n in addition to wrap-driven breaks.
+            cell.lines()
+                .map(|line| {
+                    let n = line.chars().count().max(1);
+                    (n + chars_per_line - 1) / chars_per_line
+                })
+                .sum::<usize>()
+                .max(1)
+        })
+        .max()
+        .unwrap_or(1);
+    (max_lines as f32 * line_h + pad_h).max(default_h)
 }
 
 fn column_letter(mut idx: usize) -> String {

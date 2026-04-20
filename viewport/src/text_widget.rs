@@ -996,8 +996,23 @@ where
         );
         let buffer = internal.editor.buffer();
         let line_count = buffer.lines.len();
+        // Seed widget_y from cosmic-text's internal scroll so the metrics
+        // we publish reflect ACTUAL on-screen positions, not no-scroll
+        // positions. Without this seeding, draw renders text at unscrolled
+        // y while the cursor (computed via cosmic's scroll-aware selection)
+        // appears to drift — the classic "two sources of truth" violation.
+        let scroll = buffer.scroll();
+        let mut scroll_offset_px: f32 = scroll.vertical;
+        for i in 0..scroll.line.min(line_count) {
+            let visual_rows = buffer.lines[i]
+                .layout_opt()
+                .map(|v| v.len())
+                .unwrap_or(1)
+                .max(1);
+            scroll_offset_px += visual_rows as f32 * line_h;
+        }
         let mut metrics: Vec<LineMetric> = Vec::with_capacity(line_count + 1);
-        let mut widget_y = 0.0f32;
+        let mut widget_y = -scroll_offset_px;
         let mut buffer_y = 0.0f32;
         let mut next_child = 0;
         for line in 0..line_count {
