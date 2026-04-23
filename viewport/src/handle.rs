@@ -81,6 +81,12 @@ pub fn create(
             RawDisplayHandle::Windows(WindowsDisplayHandle::new()),
         )
     };
+    // Linux embedders (e.g. Layers) build their own surface; this entry is unused.
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let (raw_window, raw_display): (RawWindowHandle, RawDisplayHandle) = {
+        let _ = (ptr, width, height, scale, instance);
+        return None;
+    };
 
     let target = wgpu::SurfaceTargetUnsafe::RawHandle {
         raw_display_handle: raw_display,
