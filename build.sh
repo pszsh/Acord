@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+BUILD="$ROOT/build"
+APP="$BUILD/bin/Acord.app"
+CONTENTS="$APP/Contents"
+MACOS="$CONTENTS/MacOS"
+RESOURCES="$CONTENTS/Resources"
+
+SDK=$(xcrun --show-sdk-path)
+
+RUST_LIB="$ROOT/target/release"
+export MACOSX_DEPLOYMENT_TARGET=14.0
+export ZERO_AR_DATE=0
+echo "Building Rust workspace (release)..."
+cd "$ROOT" && cargo build --release -p acord-viewport
+if [ $? -ne 0 ]; then
+    echo "ERROR: Rust build failed"
+    exit 1
+fi
+
+if [ ! -f "$RUST_LIB/libacord_viewport.a" ]; then
+    echo "ERROR: libacord_viewport.a not found at $RUST_LIB"
+    exit 1
+fi
+
+RUST_FLAGS=(-import-objc-header "$ROOT/viewport/include/acord.h" -L "$RUST_LIB" -lacord_viewport)
+
+# --- App icon from SVG via rsvg-convert ---
+SVG="$ROOT/assets/Acord.svg"
+if [ -f "$SVG" ]; then
+    echo "Generating app icon..."
+    ICONSET="$BUILD/AppIcon.iconset"
+    mkdir -p "$ICONSET"
+    for size in 16 32 64 128 256 512 1024; do
+        rsvg-convert --width="$size" --height="$size" "$SVG" -o "$ICONSET/icon_${size}.png"
+    done
+    cp "$ICONSET/icon_16.png"   "$ICONSET/icon_16x16.png"
+    cp "$ICONSET/icon_32.png"   "$ICONSET/icon_16x16@2x.png"
+    cp "$ICONSET/icon_32.png"   "$ICONSET/icon_32x32.png"
+    cp "$ICONSET/icon_64.png"   "$ICONSET/icon_32x32@2x.png"
+    cp "$ICONSET/icon_128.png"  "$ICONSET/icon_128x128.png"
+    cp "$ICONSET/icon_256.png"  "$ICONSET/icon_128x128@2x.png"
+    cp "$ICONSET/icon_256.png"  "$ICONSET/icon_256x256.png"
+    cp "$ICONSET/icon_512.png"  "$ICONSET/icon_256x256@2x.png"
+    cp "$ICONSET/icon_512.png"  "$ICONSET/icon_512x512.png"
+    cp "$ICONSET/icon_1024.png" "$ICONSET/icon_512x512@2x.png"
+    rm -f "$ICONSET"/icon_*.png.tmp "$ICONSET"/icon_16.png "$ICONSET"/icon_32.png "$ICONSET"/icon_64.png "$ICONSET"/icon_128.png "$ICONSET"/icon_256.png "$ICONSET"/icon_512.png "$ICONSET"/icon_1024.png
+    iconutil -c icns "$ICONSET" -o "$BUILD/AppIcon.icns"
+    rm -rf "$ICONSET"
+fi
+
+# --- Bundle structure ---
+mkdir -p "$MACOS" "$RESOURCES"
+cp "$ROOT/Info.plist" "$CONTENTS/Info.plist"
+if [ -f "$BUILD/AppIcon.icns" ]; then
+    cp "$BUILD/AppIcon.icns" "$RESOURCES/AppIcon.icns"
+fi
+
+# --- Compile Swift ---
+echo "Compiling Swift (release)..."
+swiftc \
+    -target arm64-apple-macosx14.0 \
+    -sdk "$SDK" \
+    "${RUST_FLAGS[@]}" \
+    -framework Cocoa \
+    -framework SwiftUI \
+    -framework Metal \
+    -framework MetalKit \
+    -framework QuartzCore \
+    -framework CoreGraphics \
+    -framework CoreFoundation \
+    -O \
+    -o "$MACOS/Acord" \
+    "$ROOT"/src/*.swift
+
+# --- Code sign ---
+codesign --force --sign - "$APP"
+
+echo "Built: $APP"
+
+open /Users/pszsh/External/Repositories/Acord/build/bin/Acord.app 

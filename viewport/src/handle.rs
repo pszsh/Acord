@@ -228,24 +228,33 @@ pub fn render(handle: &mut ViewportHandle) {
             new_cmd_a_armed = Some(false);
         }
 
-        // View mode: consume all events except mode-switch keys.
-        // Ctrl+I, Ctrl+/, Ctrl+Esc, `i`, `/` are handled by their own
-        // match arms below. Everything else is swallowed.
+        // View mode: drop the keys that would write to the document so
+        // the iced widget never sees them. `i` and `/` (mode-switch)
+        // fall through to their own match arms below; mouse events,
+        // scroll, navigation/selection keys, and modifier-prefixed
+        // shortcuts also pass through and get message-layer gated.
         if handle.state.render_mode == RenderMode::View {
-            let is_mode_switch = match event {
+            let is_typing_char = match event {
                 Event::Keyboard(keyboard::Event::KeyPressed {
                     key: keyboard::Key::Character(c), modifiers, ..
-                }) => {
-                    (modifiers.control() && (c.as_str() == "i" || c.as_str() == "/"))
-                    || (!modifiers.logo() && !modifiers.control() && !modifiers.alt()
-                        && (c.as_str() == "i" || c.as_str() == "/"))
+                }) if !modifiers.logo() && !modifiers.control() && !modifiers.alt() => {
+                    c.as_str() != "i" && c.as_str() != "/"
                 }
-                Event::Keyboard(keyboard::Event::KeyPressed {
-                    key: keyboard::Key::Named(keyboard::key::Named::Escape), modifiers, ..
-                }) => modifiers.control(),
                 _ => false,
             };
-            if !is_mode_switch {
+            let is_destructive_named = matches!(
+                event,
+                Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(
+                        keyboard::key::Named::Backspace
+                        | keyboard::key::Named::Delete
+                        | keyboard::key::Named::Enter
+                        | keyboard::key::Named::Tab
+                    ),
+                    ..
+                })
+            );
+            if is_typing_char || is_destructive_named {
                 consumed.push(ev_idx);
                 continue;
             }
@@ -574,8 +583,8 @@ pub fn render(handle: &mut ViewportHandle) {
                     messages.push(Message::ExitCellEdit);
                     consumed.push(ev_idx);
                 } else {
-                    // Nothing to dismiss — chain mode switch.
-                    // Live → Editor, Editor → View
+                    // Nothing to dismiss — cycle modes:
+                    // Live → Editor → View → Live.
                     match handle.state.render_mode {
                         RenderMode::Live => {
                             messages.push(Message::SetRenderMode(RenderMode::Editor));
@@ -585,7 +594,10 @@ pub fn render(handle: &mut ViewportHandle) {
                             messages.push(Message::SetRenderMode(RenderMode::View));
                             consumed.push(ev_idx);
                         }
-                        RenderMode::View => {}
+                        RenderMode::View => {
+                            messages.push(Message::SetRenderMode(RenderMode::Live));
+                            consumed.push(ev_idx);
+                        }
                     }
                 }
             }

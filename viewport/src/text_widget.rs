@@ -80,27 +80,32 @@ pub struct AnchoredItem<'a, Message, Theme = iced_wgpu::core::Theme> {
 pub struct LineMetric {
     /// Widget-y of this line's first visual row (relative to text_bounds.y).
     pub widget_y: f32,
-    /// Cosmic-buffer y of this line's first visual row. Buffer y advances
-    /// by line_h per visual row (wrapped lines occupy multiple rows).
-    pub buffer_y: f32,
+    /// Cosmic-text's viewport-relative y of this line's first visual row —
+    /// matches the y produced by `Selection::Caret(position).y` and what
+    /// `Action::Click { y }` consumes (already scroll-adjusted, items
+    /// invisible to it). Diverges from `widget_y` whenever an anchored
+    /// item sits between this line and `scroll.line`.
+    pub viewport_y: f32,
     /// Number of visual rows this logical line occupies after wrap.
     pub visual_rows: usize,
 }
 
-/// Translate a cosmic-buffer y (visual rows * line_h) into a widget y.
-fn buffer_y_to_widget_y(metrics: &[LineMetric], buffer_y: f32) -> f32 {
-    if metrics.is_empty() { return buffer_y; }
+/// Translate a cosmic-reported y (`Selection::Caret`, `Selection::Range`)
+/// into our widget-y so cursor + selection rectangles draw on top of the
+/// text rows the compositor actually rendered.
+fn cosmic_y_to_widget_y(metrics: &[LineMetric], cosmic_y: f32, _line_h: f32) -> f32 {
+    if metrics.is_empty() { return cosmic_y; }
     for i in (0..metrics.len() - 1).rev() {
-        if metrics[i].buffer_y <= buffer_y {
-            return metrics[i].widget_y + (buffer_y - metrics[i].buffer_y);
+        if metrics[i].viewport_y <= cosmic_y {
+            return metrics[i].widget_y + (cosmic_y - metrics[i].viewport_y);
         }
     }
-    metrics[0].widget_y + (buffer_y - metrics[0].buffer_y)
+    metrics[0].widget_y + (cosmic_y - metrics[0].viewport_y)
 }
 
-/// Translate a widget y into a cosmic-buffer y. Click/drag positions go
-/// through this so cosmic-text receives the right visual row.
-fn widget_y_to_buffer_y(metrics: &[LineMetric], widget_y: f32, line_h: f32) -> f32 {
+/// Translate a widget-y (mouse coords) back into the y cosmic-text expects
+/// for click/drag actions — the inverse of `cosmic_y_to_widget_y`.
+fn widget_y_to_cosmic_y(metrics: &[LineMetric], widget_y: f32, line_h: f32) -> f32 {
     if metrics.len() < 2 { return widget_y; }
     let line_count = metrics.len() - 1;
     for i in 0..line_count {
@@ -108,17 +113,17 @@ fn widget_y_to_buffer_y(metrics: &[LineMetric], widget_y: f32, line_h: f32) -> f
         let line_bot = line_top + metrics[i].visual_rows as f32 * line_h;
         if widget_y < line_bot {
             if widget_y < line_top {
-                return metrics[i].buffer_y;
+                return metrics[i].viewport_y;
             }
-            return metrics[i].buffer_y + (widget_y - line_top);
+            return metrics[i].viewport_y + (widget_y - line_top);
         }
         let next_top = metrics[i + 1].widget_y;
         if widget_y < next_top {
-            return metrics[i].buffer_y + metrics[i].visual_rows as f32 * line_h;
+            return metrics[i].viewport_y + metrics[i].visual_rows as f32 * line_h;
         }
     }
     let tail = metrics.last().unwrap();
-    tail.buffer_y + (widget_y - tail.widget_y).max(0.0)
+    tail.viewport_y + (widget_y - tail.widget_y).max(0.0)
 }
 
 /// Distance-driven fade ratio for the gutter rainbow. `0.0` at the cursor
@@ -674,7 +679,7 @@ where
 
         let adjusted = {
             let metrics = state.line_metrics.borrow();
-            Point::new(cursor.x, buffer_y_to_widget_y(&metrics, cursor.y))
+            Point::new(cursor.x, cosmic_y_to_widget_y(&metrics, cursor.y, line_height.into()))
         };
 
         let position = adjusted + translation;
@@ -1001,30 +1006,42 @@ where
         // positions. Without this seeding, draw renders text at unscrolled
         // y while the cursor (computed via cosmic's scroll-aware selection)
         // appears to drift — the classic "two sources of truth" violation.
+        // Anchor cosmic's viewport-y at scroll.line top: cosmic's
+        // `Selection::Caret(position).y` for a cursor sitting on the very
+        // first visible visual row equals `-scroll.vertical`, regardless
+        // of how many logical lines came before. Pre-scroll lines are not
+        // shaped (`layout_opt() == None`) and contribute 0 visual rows in
+        // cosmic's own bookkeeping — mirror that so the two y-spaces
+        // agree.
         let scroll = buffer.scroll();
-        let mut scroll_offset_px: f32 = scroll.vertical;
-        for i in 0..scroll.line.min(line_count) {
-            let visual_rows = buffer.lines[i]
-                .layout_opt()
-                .map(|v| v.len())
-                .unwrap_or(1)
-                .max(1);
-            scroll_offset_px += visual_rows as f32 * line_h;
-        }
         let mut metrics: Vec<LineMetric> = Vec::with_capacity(line_count + 1);
-        let mut widget_y = -scroll_offset_px;
-        let mut buffer_y = 0.0f32;
+        let mut widget_y = -scroll.vertical;
+        let mut viewport_y = -scroll.vertical;
+        // Pre-scroll lines: cosmic treats them as 0 rows, but we still
+        // need a widget-y so any bottom-anchored items render relative to
+        // a stable bottom. For the cursor/selection mapping to work the
+        // viewport_y must stay parked at -scroll.vertical for them
+        // (cosmic has no addressable y above scroll.line).
+        for _ in 0..scroll.line.min(line_count) {
+            metrics.push(LineMetric { widget_y, viewport_y, visual_rows: 0 });
+        }
         let mut next_child = 0;
-        for line in 0..line_count {
+        // Skip anchored children that sit above the scroll line.
+        while next_child < self.anchored_children.len()
+            && self.anchored_children[next_child].after_line < scroll.line
+        {
+            next_child += 1;
+        }
+        for line in scroll.line..line_count {
             let visual_rows = buffer.lines[line]
                 .layout_opt()
                 .map(|v| v.len())
                 .unwrap_or(1)
                 .max(1);
-            metrics.push(LineMetric { widget_y, buffer_y, visual_rows });
+            metrics.push(LineMetric { widget_y, viewport_y, visual_rows });
             let line_visual_h = visual_rows as f32 * line_h;
             widget_y += line_visual_h;
-            buffer_y += line_visual_h;
+            viewport_y += line_visual_h;
             while next_child < self.anchored_children.len()
                 && self.anchored_children[next_child].after_line == line
             {
@@ -1063,8 +1080,8 @@ where
         }
         // Push sentinel AFTER trailing children are placed, so the
         // sentinel widget_y reflects the true bottom of the stream.
-        metrics.push(LineMetric { widget_y, buffer_y, visual_rows: 0 });
-        let extra = widget_y - buffer_y;
+        metrics.push(LineMetric { widget_y, viewport_y, visual_rows: 0 });
+        let extra = widget_y - viewport_y;
         *state.line_metrics.borrow_mut() = metrics;
 
         match self.height {
@@ -1185,7 +1202,7 @@ where
                             let mut pos = click.position();
                             pos.x = (pos.x - gw).max(0.0);
                             let metrics = state.line_metrics.borrow();
-                            pos.y = widget_y_to_buffer_y(&metrics, pos.y, line_h);
+                            pos.y = widget_y_to_cosmic_y(&metrics, pos.y, line_h);
                             Action::Click(pos)
                         }
                         mouse::click::Kind::Double => Action::SelectWord,
@@ -1204,7 +1221,7 @@ where
                     let mut pos = position;
                     pos.x = (pos.x - gw).max(0.0);
                     let metrics = state.line_metrics.borrow();
-                    pos.y = widget_y_to_buffer_y(&metrics, pos.y, line_h);
+                    pos.y = widget_y_to_cosmic_y(&metrics, pos.y, line_h);
                     shell.publish(on_edit(Action::Drag(pos)));
                 }
                 Update::Release => {
@@ -1527,6 +1544,12 @@ where
                     Some(m) => m,
                     None => continue,
                 };
+                // Pre-scroll lines carry visual_rows == 0 (cosmic hasn't
+                // shaped them, layout_opt returns None) — skip them so
+                // we don't draw unshaped paragraphs piled at the same y.
+                if m.visual_rows == 0 {
+                    continue;
+                }
                 let y = text_bounds.y + m.widget_y;
                 let row_h = m.visual_rows as f32 * line_h;
 
@@ -1604,7 +1627,7 @@ where
         if let Some(focus) = state.focus.as_ref() {
             let metrics_for_cursor = state.line_metrics.borrow();
             let adjust_y = |pos: Point| -> Point {
-                Point::new(pos.x, buffer_y_to_widget_y(&metrics_for_cursor, pos.y))
+                Point::new(pos.x, cosmic_y_to_widget_y(&metrics_for_cursor, pos.y, line_h))
             };
 
             match internal.editor.selection() {

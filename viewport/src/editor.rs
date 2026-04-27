@@ -2517,7 +2517,48 @@ impl EditorState {
         });
     }
 
+    /// Whether `message` is safe to dispatch while the editor is in
+    /// `RenderMode::View`. Allowlist: scroll, click/drag selection,
+    /// find, copy, zoom, focus, navigation — anything that doesn't
+    /// touch document content. Edit-shaped `text_widget::Action`s and
+    /// every mutating top-level `Message` get dropped at the gate.
+    fn message_is_view_safe(message: &Message) -> bool {
+        match message {
+            Message::SetRenderMode(_) => true,
+            Message::FocusBlock(_) => true,
+            Message::TogglePreview => true,
+            Message::MarkdownLink(_) => true,
+            Message::ZoomIn | Message::ZoomOut | Message::ZoomReset => true,
+            Message::ToggleFind | Message::HideFind => true,
+            Message::FindQueryChanged(_)
+            | Message::FindNext
+            | Message::FindPrev => true,
+            Message::ReplaceQueryChanged(_) => true,
+            Message::TableMoveUp
+            | Message::TableMoveDown
+            | Message::TableMoveLeft
+            | Message::TableMoveRight => true,
+            Message::SelectAllBlocks => true,
+            Message::ShowContextMenu { .. } | Message::HideContextMenu => true,
+            Message::CopyLiteral(_) | Message::CopyFocusedTableSelection => true,
+            Message::InlineResultPress { .. } | Message::InlineResultRelease => true,
+            Message::EditorAction(action) | Message::BlockAction(_, action) => {
+                !action.is_edit()
+            }
+            _ => false,
+        }
+    }
+
     pub fn update(&mut self, message: Message) {
+        // View mode: drop anything that would change the document. Mode
+        // switches, focus, scroll, click/drag selection, find, copy,
+        // navigation — all pass through. Allowlist; new mutating
+        // messages should fall through to the default `false` arm and
+        // get dropped.
+        if self.render_mode == RenderMode::View && !Self::message_is_view_safe(&message) {
+            return;
+        }
+
         // Drop whole-document selection on any message that isn't itself an
         // operation on that selection. Click, key press, table action — all
         // collapse the doc-wide selection back to single-block / single-cell.
@@ -3533,6 +3574,7 @@ impl EditorState {
         col_items.push(status_bar.into());
 
         iced_widget::column(col_items)
+            .width(Length::Fill)
             .height(Length::Fill)
             .into()
     }

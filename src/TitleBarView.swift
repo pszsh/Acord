@@ -69,6 +69,8 @@ class TitleBarView: NSView {
         label.lineBreakMode = .byTruncatingTail
         label.cell?.truncatesLastVisibleLine = true
         label.translatesAutoresizingMaskIntoConstraints = false
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        label.setContentHuggingPriority(.defaultLow, for: .horizontal)
         label.stringValue = "Untitled"
 
         editor.font = .systemFont(ofSize: 13, weight: .semibold)
@@ -81,6 +83,8 @@ class TitleBarView: NSView {
         editor.focusRingType = .none
         editor.cell?.lineBreakMode = .byTruncatingTail
         editor.translatesAutoresizingMaskIntoConstraints = false
+        editor.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        editor.setContentHuggingPriority(.defaultLow, for: .horizontal)
         editor.isHidden = true
         editor.delegate = self
 
@@ -94,7 +98,7 @@ class TitleBarView: NSView {
 
             editor.centerXAnchor.constraint(equalTo: centerXAnchor),
             editor.centerYAnchor.constraint(equalTo: centerYAnchor),
-            editor.widthAnchor.constraint(equalTo: widthAnchor, multiplier: 0.5),
+            editor.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, multiplier: 0.5),
         ])
 
         let dblClick = NSClickGestureRecognizer(target: self, action: #selector(handleDoubleClick(_:)))
