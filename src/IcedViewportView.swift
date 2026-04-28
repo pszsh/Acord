@@ -181,7 +181,7 @@ class IcedViewportView: NSView {
 
         if cmd && !shift {
             switch chars {
-            case "a", "b", "c", "e", "f", "g", "i", "v", "x", "z", "p", "t",
+            case "a", "b", "c", "e", "f", "g", "i", "r", "v", "x", "z", "p", "t",
                  "=", "+", "-", "0":
                 keyDown(with: event)
                 return true

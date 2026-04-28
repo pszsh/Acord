@@ -91,6 +91,8 @@ pub enum Message {
     /// blank line with one blank line of padding above and below).
     FixUp,
     Evaluate,
+    /// Full-document ordered eval: every module evaluated in sequence.
+    EvalAll,
     SmartEval,
     ZoomIn,
     ZoomOut,
@@ -436,6 +438,10 @@ pub struct EditorState {
     // ── Images ──
     pub computed_images: Vec<ComputedImage>,
     pub image_cache: HashMap<String, ImageCacheEntry>,
+
+    /// Previous global cursor line (block start_line + intra-block line).
+    /// Used by `tick()` to detect cursor-line changes and trigger eval.
+    prev_cursor_line: usize,
 }
 
 /// Per-eval table name→id bookkeeping. `keys` is every alias a table is
@@ -551,6 +557,7 @@ impl EditorState {
             pending_clipboard: None,
             computed_images: Vec::new(),
             image_cache: HashMap::new(),
+            prev_cursor_line: 0,
         }
     }
 
@@ -1126,6 +1133,10 @@ impl EditorState {
         if let Some(sc) = loaded.sidecar {
             self.apply_sidecar(&sc);
         }
+        // Trigger full eval when loading into Live or View mode.
+        if self.render_mode == RenderMode::Live || self.render_mode == RenderMode::View {
+            self.run_eval_all();
+        }
     }
 
     /// Save the document to raw file bytes: assign sidecar ids to any tables
@@ -1496,6 +1507,22 @@ impl EditorState {
         if self.eval_dirty && self.last_edit.elapsed().as_millis() >= EVAL_DEBOUNCE_MS {
             self.eval_dirty = false;
             self.run_eval();
+        }
+        // Cursor-line-change trigger: when the cursor moves to a different
+        // line (arrow keys, click, etc.) without an edit, re-evaluate.
+        {
+            let block_start = self.layout.get(self.focused_block)
+                .and_then(|id| self.registry.get(id))
+                .map(|b| b.start_line())
+                .unwrap_or(0);
+            let intra = self.content().cursor().position.line;
+            let global_line = block_start + intra;
+            if global_line != self.prev_cursor_line {
+                self.prev_cursor_line = global_line;
+                if !self.eval_dirty {
+                    self.run_eval();
+                }
+            }
         }
         // Fire the long-press copy at the threshold — if the user is still
         // holding past LONG_PRESS_MS without having released, double-clicked,
@@ -2127,7 +2154,7 @@ impl EditorState {
     /// containing the raw markdown. The single-block view path renders it
     /// as a full-page text editor. Cmd+A then selects all text naturally.
     pub fn enter_editor_mode(&mut self) {
-        if self.render_mode != RenderMode::Live { return; }
+        if self.render_mode == RenderMode::Editor { return; }
         self.push_undo_snapshot();
         let full = self.full_text();
         self.clear_blocks();
@@ -2138,6 +2165,10 @@ impl EditorState {
         self.render_mode = RenderMode::Editor;
         self.all_blocks_selected = false;
         self.editing = None;
+        self.eval_results.clear();
+        self.computed_tables.clear();
+        self.computed_trees.clear();
+        self.computed_cells.clear();
         // Select all text in the single editor so the user can immediately
         // delete or type over it.
         self.content_mut().perform(Action::Move(Motion::DocumentStart));
@@ -2150,7 +2181,7 @@ impl EditorState {
     /// Switch back to live mode: reparse the single text block into
     /// structured blocks (headings, tables, HRs, etc.).
     pub fn exit_editor_mode(&mut self) {
-        if self.render_mode == RenderMode::Live { return; }
+        if self.render_mode != RenderMode::Editor { return; }
         let text = self.content().text();
         let lang = self.lang_str();
         self.replace_blocks(blocks::parse_blocks(&text, &lang));
@@ -2218,29 +2249,34 @@ impl EditorState {
             }
         }
 
-        // Find use declarations in the focused block and import those modules
-        if let Some(block) = self.block_at(block_idx) {
-            if let Some(tb) = block.as_any().downcast_ref::<TextBlock>() {
-                let text = tb.content.text();
-                let use_decls = interp::extract_use_declarations(&text);
-                for decl in &use_decls {
-                    if let Some(dep_module) = self.modules.iter().find(|m| m.name == decl.module) {
-                        let dep_text = self.module_source_text(dep_module);
-                        let mut dep_interp = interp::Interpreter::new();
-                        if let Some(root) = self.modules.iter().find(|m| m.is_root) {
-                            if !dep_module.is_root {
-                                let root_text = self.module_source_text(root);
-                                let mut root_interp = interp::Interpreter::new();
-                                crate::eval::evaluate_document_with_interp(&mut root_interp, &root_text);
-                                dep_interp.import_all(&root_interp.exports());
+        // Find use declarations in all text blocks of this module and import those modules
+        let use_block_ids: Vec<crate::selection::BlockId> = my_module
+            .map(|m| m.block_ids.clone())
+            .unwrap_or_default();
+        for &bid in &use_block_ids {
+            if let Some(block) = self.registry.get(&bid) {
+                if let Some(tb) = block.as_any().downcast_ref::<TextBlock>() {
+                    let text = tb.content.text();
+                    let use_decls = interp::extract_use_declarations(&text);
+                    for decl in &use_decls {
+                        if let Some(dep_module) = self.modules.iter().find(|m| m.name == decl.module) {
+                            let dep_text = self.module_source_text(dep_module);
+                            let mut dep_interp = interp::Interpreter::new();
+                            if let Some(root) = self.modules.iter().find(|m| m.is_root) {
+                                if !dep_module.is_root {
+                                    let root_text = self.module_source_text(root);
+                                    let mut root_interp = interp::Interpreter::new();
+                                    crate::eval::evaluate_document_with_interp(&mut root_interp, &root_text);
+                                    dep_interp.import_all(&root_interp.exports());
+                                }
                             }
-                        }
-                        crate::eval::evaluate_document_with_interp(&mut dep_interp, &dep_text);
-                        let dep_exports = dep_interp.exports();
-                        match &decl.item {
-                            None => eval_interp.import_all(&dep_exports),
-                            Some(s) if s == "*" => eval_interp.import_all(&dep_exports),
-                            Some(item) => { eval_interp.import_item(&dep_exports, item); }
+                            crate::eval::evaluate_document_with_interp(&mut dep_interp, &dep_text);
+                            let dep_exports = dep_interp.exports();
+                            match &decl.item {
+                                None => eval_interp.import_all(&dep_exports),
+                                Some(s) if s == "*" => eval_interp.import_all(&dep_exports),
+                                Some(item) => { eval_interp.import_item(&dep_exports, item); }
+                            }
                         }
                     }
                 }
@@ -2373,6 +2409,33 @@ impl EditorState {
             });
         }
 
+    }
+
+    /// Evaluate every module in document order. Each module gets a fresh
+    /// interpreter seeded with root exports (and its own `use` imports).
+    /// Used by Cmd+R, mode switches to Live/View, and file loads.
+    fn run_eval_all(&mut self) {
+        self.rebuild_modules();
+        // Clear all computed layers up front.
+        self.eval_results.clear();
+        self.computed_tables.clear();
+        self.computed_trees.clear();
+        self.computed_cells.clear();
+
+        // Evaluate each module in order by temporarily pointing focused_block
+        // at a text block within it, then calling run_eval() which already
+        // handles cross-module imports (root exports + `use` declarations).
+        let saved = self.focused_block;
+        let modules: Vec<crate::module::Module> = self.modules.clone();
+        for module in &modules {
+            let anchor_idx = module.block_ids.iter()
+                .find_map(|bid| self.layout.iter().position(|id| id == bid));
+            if let Some(idx) = anchor_idx {
+                self.focused_block = idx;
+                self.run_eval();
+            }
+        }
+        self.focused_block = saved;
     }
 
     pub fn take_pending_focus(&mut self) -> Option<WidgetId> {
@@ -2542,6 +2605,7 @@ impl EditorState {
             Message::ShowContextMenu { .. } | Message::HideContextMenu => true,
             Message::CopyLiteral(_) | Message::CopyFocusedTableSelection => true,
             Message::InlineResultPress { .. } | Message::InlineResultRelease => true,
+            Message::EvalAll => true,
             Message::EditorAction(action) | Message::BlockAction(_, action) => {
                 !action.is_edit()
             }
@@ -2768,6 +2832,9 @@ impl EditorState {
             Message::FixUp => self.fix_up(),
             Message::Evaluate => {
                 self.run_eval();
+            }
+            Message::EvalAll => {
+                self.run_eval_all();
             }
             Message::SmartEval => {
                 let cursor = self.content().cursor();
@@ -3273,9 +3340,24 @@ impl EditorState {
             }
             Message::SetRenderMode(mode) => {
                 match mode {
-                    RenderMode::Live => self.exit_editor_mode(),
+                    RenderMode::Live => {
+                        if self.render_mode == RenderMode::Editor {
+                            self.exit_editor_mode();
+                        } else if self.render_mode == RenderMode::View {
+                            self.render_mode = RenderMode::Live;
+                            self.reparse();
+                            // Restore keyboard focus to the focused text block.
+                            if let Some(tb) = self.text_block_at(self.focused_block) {
+                                self.pending_focus = Some(block_editor_id(tb.id));
+                            }
+                        }
+                        self.run_eval_all();
+                    }
                     RenderMode::Editor => self.enter_editor_mode(),
-                    RenderMode::View => self.enter_view_mode(),
+                    RenderMode::View => {
+                        self.enter_view_mode();
+                        self.run_eval_all();
+                    }
                 }
             }
             Message::ClearAllBlocks => {

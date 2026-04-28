@@ -304,9 +304,9 @@ pub extern "C" fn viewport_send_command(handle: *mut ViewportHandle, command: u3
         8 => h.state.update(editor::Message::ZoomOut),
         9 => h.state.update(editor::Message::ZoomReset),
         // 11 = live, 12 = editor, 13 = view
-        11 => h.state.exit_editor_mode(),
-        12 => h.state.enter_editor_mode(),
-        13 => h.state.enter_view_mode(),
+        11 => h.state.update(editor::Message::SetRenderMode(editor::RenderMode::Live)),
+        12 => h.state.update(editor::Message::SetRenderMode(editor::RenderMode::Editor)),
+        13 => h.state.update(editor::Message::SetRenderMode(editor::RenderMode::View)),
         _ => return,
     };
     h.needs_redraw = true;

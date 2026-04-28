@@ -362,6 +362,10 @@ pub fn render(handle: &mut ViewportHandle) {
                         messages.push(Message::SmartEval);
                         consumed.push(ev_idx);
                     }
+                    "r" => {
+                        messages.push(Message::EvalAll);
+                        consumed.push(ev_idx);
+                    }
                     "z" if modifiers.shift() => {
                         messages.push(Message::Redo);
                         consumed.push(ev_idx);
