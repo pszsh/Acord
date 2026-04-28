@@ -1,5 +1,9 @@
 [workspace]
-members = ["core", "viewport", "windows"]
+members = ["core", "viewport", "windows", "linux", "xtask"]
+# Excludes `linux` (deps don't build on macOS/Windows) and `xtask` (build-tool,
+# not part of the app). The Linux script invokes `cargo build -p acord-linux`
+# directly when running on a Linux host.
+default-members = ["core", "viewport", "windows"]
 resolver = "2"
 
 [profile.release]
