@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 extension Notification.Name {
     static let focusEditor = Notification.Name("focusEditor")
     static let focusTitle = Notification.Name("focusTitle")
+    static let newNoteSeeded = Notification.Name("newNoteSeeded")
 }
 
 class WindowController {
@@ -81,6 +82,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         NotificationCenter.default.addObserver(
             self, selector: #selector(settingsDidChange),
             name: .settingsChanged, object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleNewNoteSeeded),
+            name: .newNoteSeeded, object: nil
         )
 
         if let url = pendingOpenURLs.first {
@@ -606,6 +612,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     @objc private func setEditorMode() {
+        viewport?.sendCommand(12)
+    }
+
+    @objc private func handleNewNoteSeeded() {
         viewport?.sendCommand(12)
     }
 

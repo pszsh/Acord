@@ -300,6 +300,7 @@ class AppState: ObservableObject {
         let id = bridge.newDocument()
         currentNoteID = id
         selectedNoteIDs = [id]
+        NotificationCenter.default.post(name: .newNoteSeeded, object: nil)
         documentText = "# "
         evalResults = [:]
         modified = false

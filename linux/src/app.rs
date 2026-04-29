@@ -301,9 +301,12 @@ impl App {
     }
 
     fn save_file_as(&mut self) {
+        let notes_dir = self.config.notes_dir();
+        let _ = std::fs::create_dir_all(&notes_dir);
         let dialog = rfd::FileDialog::new()
             .add_filter("Markdown", &["md"])
             .add_filter("All Files", &["*"])
+            .set_directory(&notes_dir)
             .set_file_name("note.md");
         if let Some(path) = dialog.save_file() {
             self.write_to(&path);
@@ -324,6 +327,7 @@ impl App {
     }
 
     fn new_note(&mut self) {
+        viewport_send_command(self.handle, 12);
         let stub = CString::new("# ").unwrap();
         viewport_set_text(self.handle, stub.as_ptr());
         if let Some(w) = &self.window {
@@ -394,6 +398,7 @@ impl ApplicationHandler for App {
             Some(h) => {
                 self.handle = Box::into_raw(Box::new(h));
                 self.sync_settings();
+                viewport_send_command(self.handle, 12);
                 let stub = CString::new("# ").unwrap();
                 viewport_set_text(self.handle, stub.as_ptr());
             }

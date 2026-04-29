@@ -247,6 +247,7 @@ impl App {
     }
 
     fn new_note(&mut self) {
+        viewport_send_command(self.handle, 12);
         let stub = CString::new("# ").unwrap();
         viewport_set_text(self.handle, stub.as_ptr());
         if let Some(w) = &self.window {
