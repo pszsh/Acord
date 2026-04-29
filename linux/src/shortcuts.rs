@@ -1,4 +1,4 @@
-use winit::keyboard::{Key, ModifiersState, NamedKey, SmolStr};
+use winit::keyboard::{Key, ModifiersState, SmolStr};
 
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
@@ -47,6 +47,7 @@ pub fn match_shortcut(modifiers: ModifiersState, key: &Key) -> Option<MenuAction
             (false, 'i') => Some(MenuAction::Italic),
             (false, 't') => Some(MenuAction::InsertTable),
             (false, 'f') => Some(MenuAction::Find),
+            (false, 'e') => Some(MenuAction::Evaluate),
             (true,  'e') => Some(MenuAction::ExportCrate),
             (false, ',') => Some(MenuAction::Settings),
             (false, '=') | (false, '+') => Some(MenuAction::ZoomIn),
@@ -54,7 +55,6 @@ pub fn match_shortcut(modifiers: ModifiersState, key: &Key) -> Option<MenuAction
             (true,  '0') => Some(MenuAction::ZoomReset),
             _ => None,
         },
-        Key::Named(NamedKey::Enter) => Some(MenuAction::Evaluate),
         _ => None,
     }
 }

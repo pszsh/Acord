@@ -25,6 +25,9 @@ case "$(uname -s)" in
     *) echo "package.sh: macOS host only (need swiftc + codesign)" >&2; exit 1;;
 esac
 
+# raises the per-process file descriptor limit for the linker
+ulimit -n 65536 2>/dev/null || ulimit -n 8192 2>/dev/null || true
+
 ALL_TARGETS=(
     macos-aarch64
     macos-x86_64
@@ -170,8 +173,8 @@ build_macos() {
 build_windows() {
     local arch="$1" rust_target
     case "$arch" in
-        aarch64) rust_target=aarch64-pc-windows-msvc ;;
-        x86_64)  rust_target=x86_64-pc-windows-msvc ;;
+        aarch64) rust_target=aarch64-pc-windows-gnullvm ;;
+        x86_64)  rust_target=x86_64-pc-windows-gnu ;;
     esac
 
     rustup target add "$rust_target" >/dev/null 2>&1 || true

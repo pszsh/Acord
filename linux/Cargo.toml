@@ -14,14 +14,12 @@ path = "src/main.rs"
 [features]
 default = ["x11", "wayland"]
 x11 = ["winit/x11"]
-wayland = ["winit/wayland"]
+wayland = ["winit/wayland", "winit/wayland-dlopen", "winit/wayland-csd-adwaita"]
 
 [dependencies]
 acord-core = { path = "../core" }
 acord-viewport = { path = "../viewport" }
-# rwh_06 = raw-window-handle 0.6 trait impls (HasWindowHandle/HasDisplayHandle).
-# Required because we lift the surface handle out of the winit Window before
-# handing it to wgpu via viewport_create.
+# rwh_06 enables raw-window-handle 0.6 trait impls.
 winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
 arboard = "3"
 rfd = "0.15"
