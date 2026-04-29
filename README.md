@@ -1,53 +1,5 @@
 # Acord
 
-
-## Quickstart
-
-- Download a pre-compiled binary from [Releases](.././../releases)
-
-- Or build from source — one command, picks the right script for your platform:
-
-```bash
-cargo xtask install
-```
-
-On macOS this drops a release `.app` into `/Applications`. On Linux it installs the binary into `~/.local/bin`, drops a `.desktop` entry into `~/.local/share/applications`, and registers the icon. On Windows it builds the release exe (no install step yet).
-
-Other commands:
-
-```bash
-cargo xtask build              # release build only
-cargo xtask debug              # debug build, foreground launch
-cargo xtask build-universal    # universal arm64+x86_64 binary (macOS / Windows)
-cargo xtask package --all      # cross-compile + zip all six distributables
-```
-
-Append `-macos`, `-windows`, or `-linux` to force a platform (e.g. `cargo xtask build-universal-windows`).
-
-On Linux, both x11 and wayland backends are linked into the binary by default. Force one with `ACORD_FEATURES=wayland cargo xtask build` (handy for flatpak or stripped distros).
-
-### Releasing
-
-`cargo xtask package --all` produces six zips in `dist/` from a single macOS host:
-
-```
-dist/acord-macos-aarch64.zip       # Acord.app — drag to /Applications
-dist/acord-macos-x86_64.zip
-dist/acord-windows-aarch64.zip     # folder with Acord.exe + assets
-dist/acord-windows-x86_64.zip
-dist/acord-linux-aarch64.zip       # folder with Acord + install.sh
-dist/acord-linux-x86_64.zip
-```
-
-Cross-compile uses [`cargo-zigbuild`](https://github.com/rust-cross/cargo-zigbuild) (zig as the cross-linker) for the windows/linux targets — no Docker, no VMs. One-time setup:
-
-```bash
-brew install zig librsvg
-cargo install cargo-zigbuild
-```
-
-Or build a single target: `cargo xtask package --target windows-aarch64`.
-
 Here's the 'sales' pitch:
 
 "Hi there, do you enjoy casually solving project euler problems and are tired of using the spotlight bar as your primary calculator?" - Then this might be your kinda thing.
@@ -70,6 +22,43 @@ Well, assuming everything I have said is true and just, then this,
 Happy? Me too.
 
 ![Screenie](https://git.else-if.org/jess/Acord/raw/branch/main/Home.png)
+
+## Quickstart
+
+- Download a pre-compiled binary from [Releases](../../../releases)
+
+- Or build from source — one command, picks the right script for your platform:
+
+```bash
+cargo xtask install
+```
+
+On macOS this drops a release `.app` into `/Applications`. On Linux it installs the binary into `~/.local/bin`, drops a `.desktop` entry into `~/.local/share/applications`, and registers the icon. On Windows it builds the release exe.
+
+Other commands:
+
+```bash
+cargo xtask build              # release build only
+cargo xtask debug              # debug build, foreground launch
+cargo xtask package --all      # cross-compile + zip all six distributables
+```
+
+Append `-macos`, `-windows`, or `-linux` to force a platform (e.g. `cargo xtask build-universal-windows`).
+
+On Linux, both x11 and wayland backends are linked into the binary by default.
+Force one with `ACORD_FEATURES=wayland cargo xtask build`
+
+Cross-compile uses [`cargo-zigbuild`](https://github.com/rust-cross/cargo-zigbuild) (zig as the cross-linker) for the windows/linux targets — no Docker, no VMs. One-time setup:
+
+```bash
+brew install zig librsvg
+cargo install cargo-zigbuild
+```
+
+Or build a single target: `cargo xtask package --target windows-aarch64`.
+
+
+---
 
 
 I built Acord because I needed something between vim and the IDE — not a webapp (VS Code), not a stack of plugins held together with hope. A real, focused, native tool for thinking in. Notes I write turn into running calculators turn into working code, all in the same file.
@@ -119,6 +108,7 @@ Tables work the way you'd expect from Numbers or Excel: cells, formulas, ranges,
   - [Architecture](../../../wiki/Architecture) → [Contributing](../../../wiki/Contributing)
 
 ## Status
+    0.2.0 All platforms are fully supported. There's also been quite a bit of polish since 0.1.0.
+    0.1.0 First Beta release. Primarily MacOS supported.
 
-macOS only for now (Apple Silicon, macOS 14+). Windows is the next target. As in, I just installed a VM, will be done by the weekend.
-
+Now, I'll be honest. I'm writing this first and foremost for myself, and I am a MacOS user. But I have been a Linux user, and I have been a Windows user, and I think it's important to aim to make things accessible for everyone. So with that said, if you come across a platform specific bug, please let me know. I probably just don't realize it exists, and I will fix it. MacOS is the best supported by default but not by design or intent. 
