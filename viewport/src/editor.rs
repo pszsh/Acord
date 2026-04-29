@@ -198,6 +198,19 @@ pub enum ShellAction {
     ToggleBrowser,
 }
 
+#[cfg(target_os = "linux")]
+const MENU_CATS: [(MenuCategory, &'static str); 4] = [
+    (MenuCategory::File,   "File"),
+    (MenuCategory::Edit,   "Edit"),
+    (MenuCategory::Render, "Render"),
+    (MenuCategory::View,   "View"),
+];
+
+#[cfg(target_os = "linux")]
+fn cat_btn_width(label: &str, char_w: f32, pad_x: f32) -> f32 {
+    label.chars().count() as f32 * char_w + pad_x * 2.0
+}
+
 pub const RESULT_PREFIX: &str = "→ ";
 
 /// long-press and double-click state for inline eval results
@@ -3320,7 +3333,7 @@ impl EditorState {
         let mut col_items: Vec<Element<'_, Message, Theme, iced_wgpu::Renderer>> = Vec::new();
 
         #[cfg(target_os = "linux")]
-        col_items.push(self.menu_section());
+        col_items.push(self.menu_strip());
 
         col_items.push(main_content);
 
@@ -3330,10 +3343,17 @@ impl EditorState {
 
         col_items.push(status_bar.into());
 
-        iced_widget::column(col_items)
+        let body: Element<'_, Message, Theme, iced_wgpu::Renderer> = iced_widget::column(col_items)
             .width(Length::Fill)
             .height(Length::Fill)
-            .into()
+            .into();
+
+        #[cfg(target_os = "linux")]
+        if let Some(cat) = self.menu_open {
+            return iced_widget::stack![body, self.menu_dropdown(cat)].into();
+        }
+
+        body
     }
 
     fn view_blocks(&self) -> Element<'_, Message, Theme, iced_wgpu::Renderer> {
@@ -3344,6 +3364,9 @@ impl EditorState {
             && self.block_at(0).map(|b| b.as_any().is::<TextBlock>()).unwrap_or(false)
             && !has_computed_layers;
 
+        #[cfg(target_os = "linux")]
+        let title_bar_h = 0.0_f32;
+        #[cfg(not(target_os = "linux"))]
         let title_bar_h = 38.0_f32;
 
         let mut block_elements: Vec<Element<'_, Message, Theme, iced_wgpu::Renderer>> = Vec::new();
@@ -3971,43 +3994,25 @@ impl EditorState {
         .into()
     }
 
-    /// returns the menu strip, plus the open category's dropdown composed below it
     #[cfg(target_os = "linux")]
-    fn menu_section(&self) -> Element<'_, Message, Theme, iced_wgpu::Renderer> {
+    fn menu_strip(&self) -> Element<'_, Message, Theme, iced_wgpu::Renderer> {
         let p = palette::current();
         let f = self.font_size;
         let char_w = f * 0.6;
         let cat_pad_x = f * 0.85;
         let strip_pad_y = f * 0.18;
-        let item_pad_x = f * 0.95;
-        let item_pad_y = f * 0.32;
-        let dropdown_radius = f * 0.30;
-        let separator_h = (f * 0.08).max(1.0);
-        let label_size = f * 0.85;
-        let hint_size = f * 0.78;
         let strip_label_size = f * 0.92;
 
-        let cats: [(MenuCategory, &'static str); 4] = [
-            (MenuCategory::File,   "File"),
-            (MenuCategory::Edit,   "Edit"),
-            (MenuCategory::Render, "Render"),
-            (MenuCategory::View,   "View"),
-        ];
-
-        let cat_btn_width = |label: &str| -> f32 {
-            label.chars().count() as f32 * char_w + cat_pad_x * 2.0
-        };
-
-        let mut strip_row: Vec<Element<'_, Message, Theme, iced_wgpu::Renderer>> = Vec::new();
-        for (cat, label) in cats {
+        let mut row: Vec<Element<'_, Message, Theme, iced_wgpu::Renderer>> = Vec::new();
+        for (cat, label) in MENU_CATS {
             let active = self.menu_open == Some(cat);
-            strip_row.push(
+            row.push(
                 iced_widget::button(
                     iced_widget::text(label.to_string())
                         .size(strip_label_size)
                         .font(syntax::EDITOR_FONT)
                 )
-                .width(Length::Fixed(cat_btn_width(label)))
+                .width(Length::Fixed(cat_btn_width(label, char_w, cat_pad_x)))
                 .padding(Padding { top: strip_pad_y, right: cat_pad_x, bottom: strip_pad_y, left: cat_pad_x })
                 .style(move |_t: &Theme, _s| iced_widget::button::Style {
                     background: if active { Some(Background::Color(p.surface1)) } else { None },
@@ -4021,7 +4026,7 @@ impl EditorState {
             );
         }
 
-        let strip = iced_widget::container(iced_widget::row(strip_row).spacing(0.0))
+        iced_widget::container(iced_widget::row(row).spacing(0.0))
             .width(Length::Fill)
             .style(move |_t: &Theme| iced_widget::container::Style {
                 background: Some(Background::Color(p.mantle)),
@@ -4029,124 +4034,139 @@ impl EditorState {
                 text_color: Some(p.text),
                 shadow: Shadow::default(),
                 snap: false,
-            });
+            })
+            .into()
+    }
 
-        let mut section: Vec<Element<'_, Message, Theme, iced_wgpu::Renderer>> = vec![strip.into()];
+    /// returns the dropdown panel for the open category, anchored under its strip button
+    #[cfg(target_os = "linux")]
+    fn menu_dropdown(&self, cat: MenuCategory) -> Element<'_, Message, Theme, iced_wgpu::Renderer> {
+        let p = palette::current();
+        let f = self.font_size;
+        let char_w = f * 0.6;
+        let cat_pad_x = f * 0.85;
+        let strip_pad_y = f * 0.18;
+        let strip_label_size = f * 0.92;
+        let item_pad_x = f * 0.95;
+        let item_pad_y = f * 0.32;
+        let dropdown_radius = f * 0.30;
+        let separator_h = (f * 0.08).max(1.0);
+        let label_size = f * 0.85;
+        let hint_size = f * 0.78;
 
-        if let Some(cat) = self.menu_open {
-            let item = |label: &str, shortcut: &str, msg: Message| -> Element<'_, Message, Theme, iced_wgpu::Renderer> {
-                let label_w = iced_widget::text(label.to_string())
-                    .size(label_size)
-                    .font(syntax::EDITOR_FONT)
-                    .width(Length::Fill);
-                let hint_w = iced_widget::text(shortcut.to_string())
-                    .size(hint_size)
-                    .font(syntax::EDITOR_FONT)
-                    .color(p.overlay0);
-                iced_widget::button(
-                    iced_widget::row![label_w, hint_w].spacing(f)
-                )
-                .width(Length::Fill)
-                .padding(Padding { top: item_pad_y, right: item_pad_x, bottom: item_pad_y, left: item_pad_x })
-                .style(context_menu_item_style)
-                .on_press(msg)
-                .into()
-            };
+        let strip_h = strip_label_size * 1.3 + strip_pad_y * 2.0;
 
-            let sep = || -> Element<'_, Message, Theme, iced_wgpu::Renderer> {
-                iced_widget::container(iced_widget::text(""))
-                    .width(Length::Fill)
-                    .height(Length::Fixed(separator_h))
-                    .style(move |_t: &Theme| iced_widget::container::Style {
-                        background: Some(Background::Color(p.surface1)),
-                        border: Border::default(),
-                        text_color: None,
-                        shadow: Shadow::default(),
-                        snap: false,
-                    })
-                    .into()
-            };
-
-            let items: Vec<Element<'_, Message, Theme, iced_wgpu::Renderer>> = match cat {
-                MenuCategory::File => vec![
-                    item("New Note",                "Ctrl+N",       Message::Shell(ShellAction::NewNote)),
-                    item("Open...",                 "Ctrl+O",       Message::Shell(ShellAction::Open)),
-                    item("Documents...",            "Alt+B",        Message::Shell(ShellAction::ToggleBrowser)),
-                    sep(),
-                    item("Save",                    "Ctrl+S",       Message::Shell(ShellAction::Save)),
-                    item("Save As...",              "Ctrl+Shift+S", Message::Shell(ShellAction::SaveAs)),
-                    sep(),
-                    item("Export as Rust Library", "Ctrl+Shift+E", Message::Shell(ShellAction::ExportCrate)),
-                    sep(),
-                    item("Settings...",             "Ctrl+,",       Message::Shell(ShellAction::Settings)),
-                    item("Quit",                    "Ctrl+Q",       Message::Shell(ShellAction::Quit)),
-                ],
-                MenuCategory::Edit => vec![
-                    item("Undo",                    "Ctrl+Z",       Message::Undo),
-                    item("Redo",                    "Ctrl+Shift+Z", Message::Redo),
-                    sep(),
-                    item("Bold",                    "Ctrl+B",       Message::ToggleBold),
-                    item("Italic",                  "Ctrl+I",       Message::ToggleItalic),
-                    item("Insert Table",            "Ctrl+T",       Message::InsertTable),
-                    sep(),
-                    item("Find...",                 "Ctrl+F",       Message::ToggleFind),
-                ],
-                MenuCategory::Render => vec![
-                    item("Live",                    "",             Message::SetRenderMode(RenderMode::Live)),
-                    item("Editor",                  "",             Message::SetRenderMode(RenderMode::Editor)),
-                    item("View",                    "",             Message::SetRenderMode(RenderMode::View)),
-                    sep(),
-                    item("Evaluate",                "Ctrl+E",       Message::SmartEval),
-                ],
-                MenuCategory::View => vec![
-                    item("Zoom In",                 "Ctrl+=",       Message::ZoomIn),
-                    item("Zoom Out",                "Ctrl+-",       Message::ZoomOut),
-                    item("Reset Zoom",              "Ctrl+Shift+0", Message::ZoomReset),
-                ],
-            };
-
-            let mut x_offset = 0.0_f32;
-            for (c, label) in cats {
-                if c == cat { break; }
-                x_offset += cat_btn_width(label);
-            }
-
-            let dropdown_width = {
-                let max_label_chars = match cat {
-                    MenuCategory::File => "Export as Rust Library".len(),
-                    MenuCategory::Edit => "Insert Table".len(),
-                    MenuCategory::Render => "Evaluate".len(),
-                    MenuCategory::View => "Reset Zoom".len(),
-                };
-                let max_hint_chars = 13_usize; // widest hint string in chars
-                (max_label_chars + max_hint_chars) as f32 * char_w + item_pad_x * 2.0 + f
-            };
-
-            let dropdown_box = iced_widget::container(
-                iced_widget::column(items).spacing(0.0).width(Length::Fixed(dropdown_width))
+        let item = |label: &str, shortcut: &str, msg: Message| -> Element<'_, Message, Theme, iced_wgpu::Renderer> {
+            let label_w = iced_widget::text(label.to_string())
+                .size(label_size)
+                .font(syntax::EDITOR_FONT)
+                .width(Length::Fill);
+            let hint_w = iced_widget::text(shortcut.to_string())
+                .size(hint_size)
+                .font(syntax::EDITOR_FONT)
+                .color(p.overlay0);
+            iced_widget::button(
+                iced_widget::row![label_w, hint_w].spacing(f)
             )
-            .style(move |_t: &Theme| iced_widget::container::Style {
-                background: Some(Background::Color(p.surface0)),
-                border: Border {
-                    color: p.surface1,
-                    width: 1.0,
-                    radius: dropdown_radius.into(),
-                },
-                text_color: Some(p.text),
-                shadow: Shadow::default(),
-                snap: false,
-            });
+            .width(Length::Fill)
+            .padding(Padding { top: item_pad_y, right: item_pad_x, bottom: item_pad_y, left: item_pad_x })
+            .style(context_menu_item_style)
+            .on_press(msg)
+            .into()
+        };
 
-            let dropdown_row: Element<'_, Message, Theme, iced_wgpu::Renderer> = iced_widget::row![
-                iced_widget::Space::new().width(Length::Fixed(x_offset)).height(Length::Shrink),
-                dropdown_box,
-            ]
-            .into();
+        let sep = || -> Element<'_, Message, Theme, iced_wgpu::Renderer> {
+            iced_widget::container(iced_widget::text(""))
+                .width(Length::Fill)
+                .height(Length::Fixed(separator_h))
+                .style(move |_t: &Theme| iced_widget::container::Style {
+                    background: Some(Background::Color(p.surface1)),
+                    border: Border::default(),
+                    text_color: None,
+                    shadow: Shadow::default(),
+                    snap: false,
+                })
+                .into()
+        };
 
-            section.push(dropdown_row);
+        let items: Vec<Element<'_, Message, Theme, iced_wgpu::Renderer>> = match cat {
+            MenuCategory::File => vec![
+                item("New Note",                "Ctrl+N",       Message::Shell(ShellAction::NewNote)),
+                item("Open...",                 "Ctrl+O",       Message::Shell(ShellAction::Open)),
+                item("Documents...",            "Alt+B",        Message::Shell(ShellAction::ToggleBrowser)),
+                sep(),
+                item("Save",                    "Ctrl+S",       Message::Shell(ShellAction::Save)),
+                item("Save As...",              "Ctrl+Shift+S", Message::Shell(ShellAction::SaveAs)),
+                sep(),
+                item("Export as Rust Library", "Ctrl+Shift+E", Message::Shell(ShellAction::ExportCrate)),
+                sep(),
+                item("Settings...",             "Ctrl+,",       Message::Shell(ShellAction::Settings)),
+                item("Quit",                    "Ctrl+Q",       Message::Shell(ShellAction::Quit)),
+            ],
+            MenuCategory::Edit => vec![
+                item("Undo",                    "Ctrl+Z",       Message::Undo),
+                item("Redo",                    "Ctrl+Shift+Z", Message::Redo),
+                sep(),
+                item("Bold",                    "Ctrl+B",       Message::ToggleBold),
+                item("Italic",                  "Ctrl+I",       Message::ToggleItalic),
+                item("Insert Table",            "Ctrl+T",       Message::InsertTable),
+                sep(),
+                item("Find...",                 "Ctrl+F",       Message::ToggleFind),
+            ],
+            MenuCategory::Render => vec![
+                item("Live",                    "",             Message::SetRenderMode(RenderMode::Live)),
+                item("Editor",                  "",             Message::SetRenderMode(RenderMode::Editor)),
+                item("View",                    "",             Message::SetRenderMode(RenderMode::View)),
+                sep(),
+                item("Evaluate",                "Ctrl+E",       Message::SmartEval),
+            ],
+            MenuCategory::View => vec![
+                item("Zoom In",                 "Ctrl+=",       Message::ZoomIn),
+                item("Zoom Out",                "Ctrl+-",       Message::ZoomOut),
+                item("Reset Zoom",              "Ctrl+Shift+0", Message::ZoomReset),
+            ],
+        };
+
+        let mut x_offset = 0.0_f32;
+        for (c, label) in MENU_CATS {
+            if c == cat { break; }
+            x_offset += cat_btn_width(label, char_w, cat_pad_x);
         }
 
-        iced_widget::column(section).spacing(0.0).width(Length::Fill).into()
+        let dropdown_width = {
+            let max_label_chars = match cat {
+                MenuCategory::File => "Export as Rust Library".len(),
+                MenuCategory::Edit => "Insert Table".len(),
+                MenuCategory::Render => "Evaluate".len(),
+                MenuCategory::View => "Reset Zoom".len(),
+            };
+            let max_hint_chars = 13_usize; // widest hint string in chars
+            (max_label_chars + max_hint_chars) as f32 * char_w + item_pad_x * 2.0 + f
+        };
+
+        let panel = iced_widget::container(
+            iced_widget::column(items).spacing(0.0).width(Length::Fixed(dropdown_width))
+        )
+        .style(move |_t: &Theme| iced_widget::container::Style {
+            background: Some(Background::Color(p.surface0)),
+            border: Border {
+                color: p.surface1,
+                width: 1.0,
+                radius: dropdown_radius.into(),
+            },
+            text_color: Some(p.text),
+            shadow: Shadow::default(),
+            snap: false,
+        });
+
+        iced_widget::column![
+            iced_widget::Space::new().width(Length::Shrink).height(Length::Fixed(strip_h)),
+            iced_widget::row![
+                iced_widget::Space::new().width(Length::Fixed(x_offset)).height(Length::Shrink),
+                panel,
+            ],
+        ]
+        .into()
     }
 
     fn find_bar(&self) -> Element<'_, Message, Theme, iced_wgpu::Renderer> {

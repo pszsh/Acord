@@ -394,6 +394,8 @@ impl ApplicationHandler for App {
             Some(h) => {
                 self.handle = Box::into_raw(Box::new(h));
                 self.sync_settings();
+                let stub = CString::new("# ").unwrap();
+                viewport_set_text(self.handle, stub.as_ptr());
             }
             None => {
                 eprintln!("acord: failed to create viewport surface");
