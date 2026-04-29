@@ -1,31 +1,19 @@
 use std::ffi::c_void;
+use std::ptr::NonNull;
 
-use iced_graphics::Viewport;
-use iced_runtime::user_interface::UserInterface;
+use iced_graphics::{Shell, Viewport};
+use iced_runtime::user_interface::{self, UserInterface};
 use iced_wgpu::core::renderer::Style;
 use iced_wgpu::core::time::Instant;
-use iced_wgpu::core::{clipboard, keyboard, mouse, window, Color, Event, Size, Theme};
-
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-use std::ptr::NonNull;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-use iced_graphics::Shell;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-use iced_runtime::user_interface;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-use iced_wgpu::core::{Font, Pixels, Point};
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+use iced_wgpu::core::{clipboard, keyboard, mouse, window, Color, Event, Font, Pixels, Point, Size, Theme};
 use iced_wgpu::Engine;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 #[cfg(target_os = "macos")]
 use raw_window_handle::{AppKitDisplayHandle, AppKitWindowHandle};
 #[cfg(target_os = "windows")]
 use raw_window_handle::{Win32WindowHandle, WindowsDisplayHandle};
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-use crate::editor::EditorState;
-use crate::editor::{Message, RenderMode};
+use crate::editor::{EditorState, Message, RenderMode};
 use crate::palette;
 use crate::table_block::TableMessage;
 use crate::ViewportHandle;
@@ -60,17 +48,10 @@ impl clipboard::Clipboard for AcordClipboard {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub fn create(
-    _native_handle: *mut c_void,
-    _width: f32,
-    _height: f32,
-    _scale: f32,
-) -> Option<ViewportHandle> {
-    None
-}
-
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+/// Mac/Windows entry point used by the C FFI. Synthesizes the platform's
+/// display handle from the window pointer the Swift bridge provides.
+/// Returns None on platforms that need both display and window — those
+/// shells should call `create_native` directly.
 pub fn create(
     native_handle: *mut c_void,
     width: f32,
@@ -78,16 +59,6 @@ pub fn create(
     scale: f32,
 ) -> Option<ViewportHandle> {
     let ptr = NonNull::new(native_handle)?;
-
-    #[cfg(target_os = "macos")]
-    let backends = wgpu::Backends::METAL;
-    #[cfg(target_os = "windows")]
-    let backends = wgpu::Backends::DX12;
-
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends,
-        ..Default::default()
-    });
 
     #[cfg(target_os = "macos")]
     let (raw_window, raw_display) = (
@@ -102,6 +73,37 @@ pub fn create(
             RawDisplayHandle::Windows(WindowsDisplayHandle::new()),
         )
     };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = (ptr, width, height, scale);
+        return None;
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    create_native(raw_display, raw_window, width, height, scale)
+}
+
+/// Rust-native entry point. Takes typed handles directly so shells that own
+/// a winit Window (Linux, future Windows refactor) can build a surface
+/// without going through the C FFI's single-pointer compromise.
+pub fn create_native(
+    raw_display: RawDisplayHandle,
+    raw_window: RawWindowHandle,
+    width: f32,
+    height: f32,
+    scale: f32,
+) -> Option<ViewportHandle> {
+    #[cfg(target_os = "macos")]
+    let backends = wgpu::Backends::METAL;
+    #[cfg(target_os = "windows")]
+    let backends = wgpu::Backends::DX12;
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let backends = wgpu::Backends::VULKAN | wgpu::Backends::GL;
+
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        backends,
+        ..Default::default()
+    });
 
     let target = wgpu::SurfaceTargetUnsafe::RawHandle {
         raw_display_handle: raw_display,

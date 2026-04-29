@@ -6,7 +6,7 @@ mod bridge;
 pub mod browser;
 mod editor;
 pub mod export;
-mod handle;
+pub mod handle;
 pub mod heading_block;
 pub mod hr_block;
 pub mod module;

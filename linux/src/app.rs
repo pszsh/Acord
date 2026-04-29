@@ -10,7 +10,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use acord_viewport::{
-    viewport_create, viewport_destroy, viewport_render, viewport_resize,
+    viewport_destroy, viewport_render, viewport_resize,
     viewport_set_text, viewport_get_text, viewport_set_theme, viewport_set_lang,
     viewport_set_line_indicator, viewport_set_gutter_rainbow,
     viewport_set_auto_pair_flags,
@@ -18,6 +18,7 @@ use acord_viewport::{
     ViewportHandle,
 };
 use acord_viewport::browser::{self, BrowserHandle};
+use acord_viewport::handle as viewport_handle;
 
 use crate::config::Config;
 use crate::shortcuts::{match_shortcut, MenuAction};
@@ -368,25 +369,19 @@ impl ApplicationHandler for App {
         let w = size.width as f32 / self.scale;
         let h = size.height as f32 / self.scale;
 
-        // Pass the raw display+window handle to the viewport. wgpu picks the
-        // X11 or Wayland backend automatically based on which RawDisplayHandle
-        // variant winit hands us, so a single binary works on both.
-        use raw_window_handle::HasWindowHandle;
-        let wh = window.window_handle().expect("window handle");
-        let raw = wh.as_raw();
+        use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+        let display = window.display_handle().expect("display handle").as_raw();
+        let win_handle = window.window_handle().expect("window handle").as_raw();
 
-        let surface_handle = match raw {
-            #[cfg(target_os = "linux")]
-            raw_window_handle::RawWindowHandle::Xlib(h) => h.window as *mut std::ffi::c_void,
-            #[cfg(target_os = "linux")]
-            raw_window_handle::RawWindowHandle::Xcb(h) => h.window.get() as *mut std::ffi::c_void,
-            #[cfg(target_os = "linux")]
-            raw_window_handle::RawWindowHandle::Wayland(h) => h.surface.as_ptr(),
-            _ => std::ptr::null_mut(),
-        };
-
-        self.handle = viewport_create(surface_handle, w, h, self.scale);
-        self.sync_settings();
+        match viewport_handle::create_native(display, win_handle, w, h, self.scale) {
+            Some(h) => {
+                self.handle = Box::into_raw(Box::new(h));
+                self.sync_settings();
+            }
+            None => {
+                eprintln!("acord: failed to create viewport surface");
+            }
+        }
         self.window = Some(window);
     }
 
