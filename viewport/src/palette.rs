@@ -152,17 +152,34 @@ pub struct WidgetSurface {
     pub border: Color,
     pub header_accent: Color,
     pub body_text: Color,
+    pub eval_fill: Color,
+    pub eval_border: Color,
+    pub eval_accent: Color,
 }
 
 pub fn widget_surface() -> WidgetSurface {
     let p = current();
-    // Dark: fill lifts above base (surface0) for a frosted-lighter card.
-    // Light: fill recedes below base (mantle) for a frosted-cooler card.
     let fill = if is_dark() { p.surface0 } else { p.mantle };
+    let eval_fill = if is_dark() { p.surface1 } else { p.crust };
     WidgetSurface {
         fill,
         border: p.surface2,
         header_accent: p.teal,
         body_text: p.text,
+        eval_fill,
+        eval_border: p.overlay0,
+        eval_accent: p.teal,
     }
+}
+
+pub fn eval_value_color() -> Color {
+    if is_dark() {
+        Color::from_rgb(0.30, 0.95, 0.50)
+    } else {
+        Color::from_rgb(0.10, 0.55, 0.18)
+    }
+}
+
+pub fn eval_arrow_color() -> Color {
+    current().red
 }

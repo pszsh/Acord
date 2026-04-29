@@ -1170,21 +1170,22 @@ pub fn cell_id(block_id: u64, row: usize, col: usize) -> WidgetId {
     WidgetId::from(format!("table_cell_{}_{}_{}", block_id, row, col))
 }
 
-fn cell_border() -> Border {
+fn cell_border_for(is_eval: bool) -> Border {
     let ws = palette::widget_surface();
     Border {
-        color: ws.border,
+        color: if is_eval { ws.eval_border } else { ws.border },
         width: 1.0,
         radius: 0.0.into(),
     }
 }
 
-fn cell_input_style(_theme: &Theme, _status: text_input::Status) -> text_input::Style {
+fn cell_input_style_for(is_eval: bool) -> text_input::Style {
     let p = palette::current();
     let ws = palette::widget_surface();
+    let fill = if is_eval { ws.eval_fill } else { ws.fill };
     text_input::Style {
-        background: Background::Color(ws.fill),
-        border: cell_border(),
+        background: Background::Color(fill),
+        border: cell_border_for(is_eval),
         icon: p.overlay2,
         placeholder: p.overlay0,
         value: ws.body_text,
@@ -1192,12 +1193,13 @@ fn cell_input_style(_theme: &Theme, _status: text_input::Status) -> text_input::
     }
 }
 
-fn header_cell_style(_theme: &Theme, _status: text_input::Status) -> text_input::Style {
+fn header_cell_style_for(is_eval: bool) -> text_input::Style {
     let p = palette::current();
     let ws = palette::widget_surface();
+    let fill = if is_eval { ws.eval_fill } else { ws.fill };
     text_input::Style {
-        background: Background::Color(ws.fill),
-        border: cell_border(),
+        background: Background::Color(fill),
+        border: cell_border_for(is_eval),
         icon: p.overlay2,
         placeholder: p.overlay0,
         value: ws.header_accent,
@@ -1423,10 +1425,9 @@ where
             {
                 // Edit mode (or eval-result table that the user can still
                 // copy from) — use the real text_input.
-                let style_fn: fn(&Theme, text_input::Status) -> text_input::Style = if is_header {
-                    header_cell_style
-                } else {
-                    cell_input_style
+                let is_eval = read_only;
+                let style_fn = move |_theme: &Theme, _status: text_input::Status| -> text_input::Style {
+                    if is_header { header_cell_style_for(is_eval) } else { cell_input_style_for(is_eval) }
                 };
                 let mut input = text_input::TextInput::new("", cell)
                     .id(cell_id(block_id, ri, ci))
@@ -1474,20 +1475,19 @@ where
                     .color(oklab::lighten_for_size(label_color, font_size))
                     .wrapping(if block.wrap { Wrapping::Word } else { Wrapping::None });
 
+                let is_eval = read_only;
                 let container_style = move |_theme: &Theme| {
                     let ws = palette::widget_surface();
                     let p = palette::current();
+                    let surface_fill = if is_eval { ws.eval_fill } else { ws.fill };
                     let background = if is_focused_this {
-                        // Tinted blue background — Excel/Numbers selection look.
-                        // Heavier alpha than the default tint so selection is
-                        // unmistakably visible against the cell fill.
                         Some(Background::Color(Color { a: 0.45, ..p.blue }))
                     } else {
-                        Some(Background::Color(ws.fill))
+                        Some(Background::Color(surface_fill))
                     };
                     container::Style {
                         background,
-                        border: cell_border(),
+                        border: cell_border_for(is_eval),
                         text_color: Some(oklab::lighten_for_size(label_color, font_size)),
                         shadow: Shadow::default(),
                         snap: false,
@@ -1597,14 +1597,21 @@ where
 
     let outer: Element<'a, Message, Theme, iced_wgpu::Renderer> = if read_only {
         iced_widget::container(with_plus)
-            .padding(Padding { top: 2.0, right: 0.0, bottom: 2.0, left: 8.0 })
+            .padding(Padding { top: 6.0, right: 6.0, bottom: 6.0, left: 12.0 })
             .width(Length::Shrink)
-            .style(|_theme: &Theme| container::Style {
-                background: None,
-                border: Border::default(),
-                text_color: None,
-                shadow: Shadow::default(),
-                snap: false,
+            .style(|_theme: &Theme| {
+                let ws = palette::widget_surface();
+                container::Style {
+                    background: Some(Background::Color(ws.eval_fill)),
+                    border: Border {
+                        color: ws.eval_accent,
+                        width: 0.0,
+                        radius: 4.0.into(),
+                    },
+                    text_color: None,
+                    shadow: Shadow::default(),
+                    snap: false,
+                }
             })
             .into()
     } else {

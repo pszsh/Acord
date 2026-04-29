@@ -59,24 +59,22 @@ use crate::tree_block::TreeBlock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderMode {
-    /// Blocks rendered, eval runs, tables interactive.
+    /// blocks rendered, eval runs, tables interactive
     Live,
-    /// Raw markdown in a single text_editor, no eval, no block splitting.
+    /// raw markdown in one text_editor, no eval, no block splitting
     Editor,
-    /// Read-only rendered view. Press `i` for Editor, `/` for Live.
+    /// read-only rendered view
     View,
 }
 
-/// User-facing line-number gutter / cursorline behavior.
+/// gutter line-number and cursorline display mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineIndicator {
-    /// Absolute line numbers, full-row cursorline band.
+    /// absolute line numbers with full-row cursorline band
     On,
-    /// Hidden — no line numbers, no cursorline band. The gutter strip
-    /// stays at its layout width so the editor doesn't reflow.
+    /// no line numbers and no cursorline band
     Off,
-    /// Vim-style: relative line numbers (cursor line shows its absolute
-    /// number, others show signed distance), cursorline band on.
+    /// vim-style relative line numbers with cursorline band
     Vim,
 }
 
@@ -104,22 +102,14 @@ pub enum Message {
     ToggleStrike,
     ToggleUnderline,
     ToggleBlockquote,
-    /// Wrap the selection in matching delimiters; if the selection is
-    /// already wrapped (markers immediately surround it, with or without
-    /// being included in the selection), unwrap it.
+    /// wraps the selection in matching delimiters, or unwraps an existing pair
     WrapWith(&'static str, &'static str),
-    /// Insert a paired `[]` / `{}` and place the cursor between them.
-    /// Only applied to `[` and `{`; quotes/parens deliberately do NOT pair
-    /// on type — use Cmd+"/'/9 to wrap a selection.
+    /// inserts paired `[]` or `{}` and places the cursor between them
     AutoPair(&'static str, &'static str),
-    /// Cmd+0: incremental scope exit. Each press closes the innermost
-    /// unclosed pair within the current block; once everything is closed,
-    /// jumps the cursor past the next outer scope's closing delimiter; once
-    /// fully at block scope, ensures a "newline sandwich" (cursor on a
-    /// blank line with one blank line of padding above and below).
+    /// incremental scope exit, then newline-sandwich placement
     FixUp,
     Evaluate,
-    /// Full-document ordered eval: every module evaluated in sequence.
+    /// evaluates every module in document order
     EvalAll,
     SmartEval,
     ZoomIn,
@@ -141,74 +131,53 @@ pub enum Message {
     TableTab,
     TableShiftTab,
     TableEnter,
-    /// Up arrow on the top row of a table. Find the text block immediately
-    /// above and focus its end; synthesize a fresh text block if none exists.
+    /// up arrow on a table's top row escapes upward
     EscapeTableUp(usize),
-    /// Down arrow on the last row of a table. Mirror of `EscapeTableUp`.
+    /// down arrow on a table's last row escapes downward
     EscapeTableDown(usize),
-    /// Move the focused cell up by one row, staying inside the same table.
+    /// moves the focused cell up by one row, staying inside the same table
     TableMoveUp,
-    /// Move the focused cell down by one row, staying inside the same table.
+    /// moves the focused cell down by one row, staying inside the same table
     TableMoveDown,
-    /// Move the focused cell left by one column.
+    /// moves the focused cell left by one column
     TableMoveLeft,
-    /// Move the focused cell right by one column.
+    /// moves the focused cell right by one column
     TableMoveRight,
-    /// Backspace / Delete on a selected (not editing) cell. Empties the cell
-    /// without removing the row — Excel/Numbers semantics.
+    /// backspace or delete on a selected (not editing) cell
     ClearSelectedCell,
-    /// Second Cmd+A press — escalate to whole-document selection. Every block
-    /// renders highlighted; Backspace clears all content; Cmd+Backspace wipes
-    /// the document down to a single empty text block.
+    /// second cmd+a press escalates to whole-document selection
     SelectAllBlocks,
-    /// Plain Backspace/Delete with `all_blocks_selected == true`. Empties
-    /// every block's content but keeps the structure (block count, block
-    /// types, table row/col counts).
+    /// backspace or delete while all blocks are selected
     ClearAllBlocks,
-    /// Cmd+Backspace with `all_blocks_selected == true`. Wipes the document
-    /// down to a single empty text block.
+    /// cmd+backspace while all blocks are selected
     DeleteAllBlocks,
-    /// Right-click on a table cell. Opens the context menu anchored at the
-    /// current cursor position. Only block_idx is needed — the menu acts on
-    /// the existing selection, not on the right-clicked cell.
+    /// right-click on a table cell
     ShowContextMenu { block_idx: usize },
-    /// Explicitly close the context menu (Escape key, etc.). Most other
-    /// messages auto-close it via `update()`'s top-of-loop drop logic.
+    /// explicitly closes the context menu
     HideContextMenu,
-    /// Push a literal string into the clipboard out-channel. Used by the
-    /// table spillover popup's copy button and by Cmd+C-on-selected-cell
-    /// where the value is already in hand at dispatch time.
+    /// pushes a literal string into the clipboard out-channel
     CopyLiteral(String),
-    /// Cmd+C while the focused block is a table — copy the current selection
-    /// (or the spillover cell, if open) as TSV. Dispatched from handle.rs
-    /// when the keyboard event would otherwise reach a non-cell-edit context.
+    /// copies the current table selection as TSV
     CopyFocusedTableSelection,
-    /// Escape from cell edit mode. The cell stays selected (highlighted) but
-    /// goes back to the static-text rendering — same as the Excel/Numbers
-    /// gesture for "stop editing this cell".
+    /// escape from cell edit mode
     ExitCellEdit,
-    /// User pressed a printable character with a cell selected but not yet
-    /// editing. Replace the cell's content with that single character and
-    /// enter edit mode — Excel/Numbers "start typing into the selection".
+    /// replaces the selected cell with one character and enters edit mode
     EnterCellEditWithChar(char),
-    /// Tab key inside a text block. iced's default `Binding::from_key_press`
-    /// returns None for Tab, so without our own binding the key does nothing.
+    /// tab key indents the current line
     IndentTab,
     OutdentTab,
     SetRenderMode(RenderMode),
-    /// Mouse pressed on an inline `/=` result. Starts the long-press timer.
+    /// mouse pressed on an inline result, arms the long-press timer
     InlineResultPress { block_id: crate::selection::BlockId, after_line: usize },
-    /// Mouse released anywhere after pressing on an inline result. Cancels
-    /// any pending long-press that hasn't fired yet.
+    /// mouse released anywhere, cancels a pending long-press
     InlineResultRelease,
-    /// Double-clicked an inline `/=` result. Copies the source line + result
-    /// to clipboard AND drops a `let  = result` template two lines down.
+    /// double-click on an inline result
     InlineResultDoubleClick { block_id: crate::selection::BlockId, after_line: usize },
 }
 
 pub const RESULT_PREFIX: &str = "→ ";
 
-/// Long-press / double-click state for the click-and-hold-on-result gesture.
+/// long-press and double-click state for inline eval results
 #[derive(Debug, Clone)]
 pub struct InlinePressState {
     pub block_id: crate::selection::BlockId,
@@ -223,18 +192,15 @@ pub const ERROR_PREFIX: &str = "⚠ ";
 
 const EVAL_DEBOUNCE_MS: u128 = 300;
 
-// ── Document layers ─────────────────────────────────────────────────
-// Layer 0 = registry + layout (user-authored structure).
-// Layers 1-3 hold computed eval artifacts, independently invalidated.
 
-/// Attachment point linking a computed item to a layer-0 text block.
+/// anchor linking a computed item to a text block
 #[derive(Debug, Clone)]
 pub struct Anchor {
     pub block_id: crate::selection::BlockId,
     pub after_line: usize,
 }
 
-/// Layer 1: inline eval result (→ value / ⚠ error).
+/// inline eval result text or error message
 #[derive(Debug, Clone)]
 pub struct InlineResult {
     pub anchor: Anchor,
@@ -246,7 +212,7 @@ impl InlineResult {
     pub fn element_height(&self, line_h: f32) -> f32 { line_h }
 }
 
-/// Layer 2: computed table from `/=|` evaluation.
+/// computed table produced by `/=|` evaluation
 #[derive(Debug, Clone)]
 pub struct ComputedTable {
     pub anchor: Anchor,
@@ -262,7 +228,7 @@ impl ComputedTable {
     }
 }
 
-/// Layer 3: computed tree from `/=\` evaluation.
+/// computed tree produced by `/=\` evaluation
 #[derive(Debug, Clone)]
 pub struct ComputedTree {
     pub anchor: Anchor,
@@ -275,19 +241,17 @@ impl ComputedTree {
     }
 }
 
-/// Layer 4: embedded image from `![alt](src)`.
+/// embedded image referenced by `![alt](src)`
 #[derive(Debug, Clone)]
 pub struct ComputedImage {
     pub anchor: Anchor,
     pub src: String,
     pub alt: String,
-    /// Pre-computed display height based on image aspect ratio and editor
-    /// width. Falls back to a placeholder height while loading.
+    /// pre-computed display height, or a placeholder while loading
     pub display_height: f32,
 }
 
-/// Cached image data keyed by source path/URL. Handle must be built once
-/// and reused — `Handle::from_bytes` mints a fresh Id every call.
+/// cached image data keyed by source path or URL
 pub struct ImageCacheEntry {
     pub handle: iced_widget::image::Handle,
     pub width: u32,
@@ -299,7 +263,7 @@ const IMAGE_MAX_H: f32 = 600.0;
 const IMAGE_PADDING: f32 = 48.0;
 const IMAGE_VPAD: f32 = 4.0;
 
-/// Ref to a layer item for interleaved rendering.
+/// reference to a computed layer item for interleaved rendering
 enum LayerItem<'a> {
     Inline(&'a InlineResult),
     Table(&'a ComputedTable),
@@ -320,10 +284,7 @@ impl LayerItem<'_> {
 
 pub const FIND_INPUT_ID: &str = "find_input";
 pub const REPLACE_INPUT_ID: &str = "replace_input";
-/// Stable id for the multi-block document scrollable. handle.rs targets this
-/// via `iced_core::widget::operation::scrollable::scroll_by` to forward
-/// wheel-scroll deltas captured by an inner `text_editor` (which would
-/// otherwise swallow them when the cursor is over the editor's bounds).
+/// stable widget id for the document scrollable
 pub const DOC_SCROLLABLE_ID: &str = "doc_scrollable";
 const UNDO_MAX: usize = 200;
 const COALESCE_MS: u128 = 500;
@@ -386,104 +347,58 @@ pub struct EditorState {
     pub find: FindState,
     pub pending_focus: Option<WidgetId>,
 
-    /// Stand-in `Content` returned by `content()` when the focused block isn't
-    /// text-bearing AND there are no text blocks anywhere in the document
-    /// (e.g. a heading-only file). Always empty; never written to.
     fallback_text: text_widget::Content,
 
-    /// Live keyboard modifier state. Updated by handle.rs from
-    /// `Event::Keyboard(ModifiersChanged)`. Drives modifier-aware click
-    /// translation (Cmd → Toggle, Shift → Extend, etc.).
+    /// live keyboard modifier state
     pub mods: Modifiers,
 
-    /// Single source of truth for selection. Mirrored from `focused_block`
-    /// changes via `set_focused_block`; the compositor reads this for
-    /// cursorline / cell tint / cross-block range visuals.
     pub(crate) selection: crate::selection::Selection,
-    /// The path keys are routed to. A single point even when `selection` is a
-    /// range or set.
+    /// the single path that keys are routed to
     pub(crate) focus: Option<crate::selection::NodePath>,
-    /// Path currently in text-input edit mode (cell static-vs-edit).
+    /// path of the cell currently in text-input edit mode
     #[allow(dead_code)]
     pub(crate) editing: Option<crate::selection::NodePath>,
-    /// Cmd+A escalation flag. Set after a first Cmd+A (block-local select);
-    /// a second Cmd+A while still armed escalates to whole-document
-    /// selection. Cleared on any other input. handle.rs owns the
-    /// arm/disarm logic; the editor only reads it.
+    /// cmd+a escalation flag for whole-document selection
     pub cmd_a_armed: bool,
-    /// Whole-document selection mode — every block renders highlighted,
-    /// plain Backspace clears all block content, Cmd+Backspace wipes the
-    /// document. Set by `Message::SelectAllBlocks`, cleared by any click
-    /// or any single-block selection change.
+    /// whole-document selection mode flag
     pub all_blocks_selected: bool,
-    /// Latest mouse cursor position in viewport coordinates. handle.rs
-    /// updates this from `handle.cursor` BEFORE draining messages, so the
-    /// `Message::TableMsg(_, ContextMenu)` handler can read the position
-    /// to anchor the context menu overlay.
+    /// latest cursor position in viewport coordinates
     pub cursor_pos: Point,
-    /// Pending pixel scroll delta to apply to the document scrollable on
-    /// the next render frame. Captured here when iced's `text_editor`
-    /// swallows a wheel-scroll event (it captures `Action::Scroll` when
-    /// the cursor is over the editor's bounds), and forwarded to the outer
-    /// scrollable via `iced_core::widget::operation::scrollable::scroll_by`
-    /// in handle.rs::render. Accumulates if multiple scroll events land
-    /// in the same frame.
+    /// pending pixel scroll delta forwarded to the document scrollable
     pub pending_scroll: f32,
-    /// Active context menu, if any. Set by right-clicking a cell;
-    /// auto-cleared by `update()` whenever a message arrives that isn't
-    /// itself a context-menu operation. So clicking a menu button
-    /// dispatches the action AND clears the menu in one shot, and clicking
-    /// anywhere outside the menu also dismisses it.
+    /// active context menu state, if any
     pub context_menu: Option<ContextMenuState>,
 
-    // ── Document layers (computed eval artifacts) ──
     pub eval_results: Vec<InlineResult>,
     pub computed_tables: Vec<ComputedTable>,
     pub computed_trees: Vec<ComputedTree>,
-    /// Per-cell evaluated formula results. Keyed by (table block id, col, row).
-    /// Cells whose raw text starts with `/=` and are not being edited render
-    /// the computed value instead; anything not in this map renders raw.
+    /// per-cell evaluated formula results, keyed by (block_id, col, row)
     pub computed_cells: HashMap<(crate::selection::BlockId, u32, u32), acord_core::interp::Value>,
 
-    /// Active long-press / pending-result-gesture state. Set by
-    /// `InlineResultPress`, cleared by `InlineResultRelease` /
-    /// `InlineResultDoubleClick`. `tick()` checks the elapsed time to fire
-    /// the copy when it crosses `LONG_PRESS_MS`.
+    /// active long-press state for the result-copy gesture
     pub inline_press: Option<InlinePressState>,
 
-    /// Line-indicator preference: controls cursorline band + relative-vs-
-    /// absolute line numbers. Pushed in from Swift via FFI.
+    /// gutter line-indicator mode
     pub line_indicator: LineIndicator,
-    /// Whether the gutter line numbers cycle through the rainbow palette
-    /// based on distance from the cursor. Independent of `line_indicator`.
+    /// whether the gutter line numbers cycle through the rainbow palette
     pub gutter_rainbow: bool,
 
-    /// Cross-platform clipboard out-channel. Editor logic writes here;
-    /// the shell drains it after each frame via `viewport_take_clipboard`
-    /// and pushes the text to the system clipboard.
+    /// pending clipboard text, drained by the shell each frame
     pub pending_clipboard: Option<String>,
 
-    // ── Images ──
     pub computed_images: Vec<ComputedImage>,
     pub image_cache: HashMap<String, ImageCacheEntry>,
 
-    /// Previous global cursor line (block start_line + intra-block line).
-    /// Used by `tick()` to detect cursor-line changes and trigger eval.
+    /// previous global cursor line, used to detect line changes
     prev_cursor_line: usize,
 }
 
-/// Per-eval table name→id bookkeeping. `keys` is every alias a table is
-/// reachable by (heading name, positional `table_N`, qualified `mod::name`);
-/// `canonical` is the preferred key for each BlockId, used as the
-/// `current_table` anchor when evaluating formulas inside that table.
+/// per-eval table name to id bookkeeping
 pub struct TableIndex {
     pub keys: HashMap<String, crate::selection::BlockId>,
     pub canonical: HashMap<crate::selection::BlockId, String>,
 }
 
-/// Mirror of `Interpreter::resolve_table_key` for use during dep-graph
-/// building, when we don't have the live interpreter handy but do have
-/// the full alias→id map from `register_visible_tables`.
 fn resolve_ref_key(
     r: &acord_core::interp::FormulaRef,
     table_index: &TableIndex,
@@ -500,11 +415,7 @@ fn resolve_ref_key(
     }
 }
 
-/// State for the on-screen context menu overlay. Anchored at viewport
-/// (x, y) — the position the user right-clicked. Carries the table's
-/// block index so menu items targeting "this table" know which one.
-/// Notably does NOT carry the right-clicked row/col — right-click is
-/// purely a menu trigger and doesn't make the clicked cell "current."
+/// on-screen context menu state anchored at viewport coordinates
 #[derive(Debug, Clone)]
 pub struct ContextMenuState {
     pub block_idx: usize,
@@ -576,7 +487,6 @@ impl EditorState {
         }
     }
 
-    // ── registry + layout helpers ──────────────────────────────────
 
     fn vec_to_registry(blocks: Vec<BoxedBlock>) -> (HashMap<crate::selection::BlockId, BoxedBlock>, Vec<crate::selection::BlockId>) {
         let mut registry = HashMap::with_capacity(blocks.len());
@@ -651,7 +561,6 @@ impl EditorState {
         }
     }
 
-    // ── Layer helpers ─────────────────────────────────────────────
 
     fn clear_layers_for_blocks(&mut self, ids: &[crate::selection::BlockId]) {
         self.eval_results.retain(|r| !ids.contains(&r.anchor.block_id));
@@ -659,8 +568,7 @@ impl EditorState {
         self.computed_trees.retain(|t| !ids.contains(&t.anchor.block_id));
     }
 
-    /// Map a line number in concatenated module source back to a per-block anchor.
-    /// `boundaries` is a sorted vec of (cumulative_line_start, block_id).
+    /// maps a line number in concatenated module source back to a per-block anchor
     fn map_line_to_anchor(
         boundaries: &[(usize, crate::selection::BlockId)],
         global_line: usize,
@@ -681,10 +589,7 @@ impl EditorState {
         }
     }
 
-    /// Scan text blocks for `![alt](src)` image references and populate
-    /// `computed_images`. Loads image bytes into `image_cache` on first
-    /// encounter (sync for local files). Replaces previous images for the
-    /// given block set — unchanged sources keep their cache entry.
+    /// scans text blocks for image references and populates the image cache
     fn scan_images(
         &mut self,
         boundaries: &[(usize, crate::selection::BlockId)],
@@ -711,11 +616,9 @@ impl EditorState {
             }
         }
 
-        // Editor width estimate for aspect-ratio scaling.
         let editor_w = 800.0f32; // approximate; TODO: pass actual width
 
         for (anchor, src, alt) in new_srcs {
-            // Load into cache if absent.
             if !self.image_cache.contains_key(&src) {
                 if let Some(entry) = load_image_from_path(&src) {
                     self.image_cache.insert(src.clone(), entry);
@@ -751,10 +654,7 @@ impl EditorState {
         None
     }
 
-    /// Update the focused block index AND mirror it into the central
-    /// `selection` / `focus` fields. Clears any active cell edit mode —
-    /// changing the focused block always exits whatever cell was being edited.
-    /// Also drops any per-table whole-table selection, since focus is moving.
+    /// updates the focused block index and mirrors it into the selection state
     fn set_focused_block(&mut self, idx: usize) {
         self.focused_block = idx;
         self.editing = None;
@@ -770,9 +670,7 @@ impl EditorState {
         }
     }
 
-    /// Mark a specific cell of a table block as selected (highlighted but not
-    /// in edit mode). Clears any active edit. Used by single-click and by
-    /// Escape-from-edit.
+    /// marks a cell as selected without entering edit mode
     fn set_selected_cell(&mut self, idx: usize, row: usize, col: usize) {
         self.focused_block = idx;
         self.editing = None;
@@ -783,10 +681,7 @@ impl EditorState {
         }
     }
 
-    /// Mark a specific cell as in edit mode (renders as text_input + takes
-    /// iced focus). Used by double-click, by printable-key entry from
-    /// selection, and by Tab/Enter navigation that wants to keep editing
-    /// rolling forward into the next cell.
+    /// marks a cell as in edit mode and gives it iced focus
     fn set_editing_cell(&mut self, idx: usize, row: usize, col: usize) {
         self.focused_block = idx;
         let bid = self.block_at(idx).map(|b| b.id());
@@ -799,9 +694,7 @@ impl EditorState {
         }
     }
 
-    /// Up arrow on the top row of a table at `table_idx`. If the immediately-
-    /// previous block is a text block, focus its end. Otherwise insert a fresh
-    /// empty text block just before the table and focus it.
+    /// escapes the table at `table_idx` upward into the previous text block
     fn escape_table_up(&mut self, table_idx: usize) {
         if table_idx > 0 {
             if let Some(tb) = self.text_block_at(table_idx - 1) {
@@ -821,7 +714,6 @@ impl EditorState {
                 return;
             }
         }
-        // No text block immediately above — synthesize one.
         self.push_undo_snapshot();
         let lang = self.lang_str();
         let new_id = blocks::next_id();
@@ -834,9 +726,7 @@ impl EditorState {
         self.reparse();
     }
 
-    /// Down arrow on the last row of a table at `table_idx`. Mirror of
-    /// `escape_table_up`: focus the immediately-following text block if any,
-    /// otherwise synthesize a fresh empty text block right after the table.
+    /// escapes the table at `table_idx` downward into the next text block
     fn escape_table_down(&mut self, table_idx: usize) {
         let next_idx = table_idx + 1;
         if next_idx < self.block_count() {
@@ -867,9 +757,7 @@ impl EditorState {
         self.lang.clone().unwrap_or_default()
     }
 
-    /// Tab width in spaces. Per-language for now defaults to 4 (matches Python
-    /// and most house-styles); a lookup table can be added when other languages
-    /// want narrower indents.
+    /// returns the tab width in spaces
     fn tab_width(&self) -> usize {
         4
     }
@@ -951,10 +839,7 @@ impl EditorState {
         self.font_size * 1.3
     }
 
-    /// Move the focused content's cursor to `target`, clamping line and column
-    /// into the current text so we never hand cosmic-text an out-of-bounds index.
-    /// Defends against an iced text_editor bug where `Content::move_to` passes
-    /// the caller's `column` straight to cosmic-text without validation.
+    /// moves the focused content's cursor to `target`, clamping line and column
     fn safe_move_to(&mut self, mut cursor: Cursor) {
         {
             let content = self.content();
@@ -995,8 +880,7 @@ impl EditorState {
         self.content_mut().move_to(cursor);
     }
 
-    /// Handle arrow/backspace/delete at block boundaries.
-    /// Returns true if the action was consumed (focus change or merge).
+    /// handles arrow, backspace, and delete at block boundaries
     fn handle_block_boundary(&mut self, action: &text_widget::Action) -> bool {
         let idx = self.focused_block;
         if !self.text_block_at(idx).is_some() {
@@ -1064,7 +948,6 @@ impl EditorState {
         }
         let prev_idx = idx - 1;
         if !self.text_block_at(prev_idx).is_some() {
-            // Previous is non-text (HR, heading) -- remove it instead
             self.remove_block(prev_idx);
             let new_focus = prev_idx.min(self.block_count().saturating_sub(1));
             self.set_focused_block(new_focus);
@@ -1124,15 +1007,8 @@ impl EditorState {
         true
     }
 
-    /// Load a document from raw file bytes. Pulls any embedded sidecar
-    /// archive out of the markdown, sets the text body, then applies the
-    /// sidecar metadata to the parsed table blocks. Used by the FFI
-    /// `viewport_set_text` entrypoint so callers don't have to know the
-    /// archive format exists.
+    /// loads a document from raw file bytes
     pub fn load_doc(&mut self, text: &str) {
-        // In editor mode, loading text should preserve the single-block state.
-        // The save→observe→setText round-trip calls load_doc; if we reparse
-        // here we'd silently exit editor mode and corrupt the block structure.
         if self.render_mode == RenderMode::Editor {
             let loaded = sidecar::extract_archive(text);
             let clean = strip_result_lines(&loaded.markdown);
@@ -1148,37 +1024,21 @@ impl EditorState {
         if let Some(sc) = loaded.sidecar {
             self.apply_sidecar(&sc);
         }
-        // Trigger full eval when loading into Live or View mode.
         if self.render_mode == RenderMode::Live || self.render_mode == RenderMode::View {
             self.run_eval_all();
         }
     }
 
-    /// Save the document to raw file bytes: assign sidecar ids to any tables
-    /// that need them, build the sidecar from current block metadata, and
-    /// embed it as a base64 zip in an HTML comment at the end of the file.
-    /// Tables with no rich metadata produce no archive — the file stays a
-    /// pure plain `.md`. Used by the FFI `viewport_get_text` entrypoint.
+    /// saves the document to file bytes, embedding the sidecar archive
     pub fn save_doc(&mut self) -> String {
         let body = self.get_clean_text();
-        // build_block_files reads self.modules; make sure it reflects the
-        // current document. rebuild_modules is idempotent and cheap.
         self.rebuild_modules();
         let sidecar = self.build_sidecar();
         let block_files = self.build_block_files();
         sidecar::embed_archive(&body, &sidecar, &block_files)
     }
 
-    /// Build the per-block source files for the archive. One `.cord` file
-    /// per logical block — a logical block is a group of parser spans
-    /// bounded by H1/H2 headings or `---` (the same grouping `self.modules`
-    /// already maintains for `use`-resolution). Tables and prose are not
-    /// boundaries; they live inside whichever block contains them.
-    ///
-    /// Filename: heading-led blocks get `<snake_name>.cord`; HR-led
-    /// (anonymous) blocks get `block_N.cord` where N is the positional
-    /// index across all logical blocks (0-based). Collisions get `_2`,
-    /// `_3`, … suffixes.
+    /// builds the per-block `.cord` source files for the sidecar archive
     pub fn build_block_files(&self) -> Vec<sidecar::BlockFile> {
         use std::collections::HashSet;
         let mut files = Vec::with_capacity(self.modules.len());
@@ -1233,9 +1093,7 @@ impl EditorState {
         candidate
     }
 
-    /// Build a `Sidecar` snapshot from the current block tree, keyed by the
-    /// positional index of each non-eval table in layout order ("0", "1", ...).
-    /// Only tables with persistent metadata produce entries.
+    /// builds a `Sidecar` snapshot from the current block tree
     fn build_sidecar(&self) -> Sidecar {
         let mut sc = Sidecar::default();
         sc.version = 1;
@@ -1274,10 +1132,6 @@ impl EditorState {
         sc
     }
 
-    /// Apply a previously-loaded `Sidecar` to the current block tree, matching
-    /// entries to tables by positional index in layout order. Non-eval tables
-    /// count; eval-result tables are skipped. Missing entries leave tables
-    /// unchanged.
     fn apply_sidecar(&mut self, sc: &Sidecar) {
         let mut position: usize = 0;
         let layout = self.layout.clone();
@@ -1318,10 +1172,6 @@ impl EditorState {
     }
 
     pub fn set_text(&mut self, text: &str) {
-        // Snapshot undo before any wholesale text replacement so undo can
-        // recover the prior state. Identity-skip when nothing actually
-        // changes — Swift's observe loop can call set_text with the text we
-        // just emitted, and we don't want round-trips piling up phantom undos.
         let current = self.get_clean_text();
         if current != text {
             self.push_undo_snapshot();
@@ -1330,13 +1180,8 @@ impl EditorState {
         self.replace_text_no_undo(text);
     }
 
-    /// Wholesale text replacement WITHOUT pushing an undo snapshot. Used by
-    /// `restore_snapshot` (the undo/redo path) where touching the undo stack
-    /// would loop.
+    /// replaces all text without pushing an undo snapshot
     fn replace_text_no_undo(&mut self, text: &str) {
-        // In editor mode, the document is a single raw text block. Don't
-        // reparse into structured blocks — that would silently exit editor
-        // mode while the render_mode flag still says Editor.
         if self.render_mode == RenderMode::Editor {
             let lang = self.lang_str();
             self.clear_blocks();
@@ -1360,10 +1205,7 @@ impl EditorState {
         self.reparse();
     }
 
-    /// Per-frame focus sync. Walks tables and sets `is_active`/`focused_cell`
-    /// based on iced's currently-focused widget id. `focused_cell` is preserved
-    /// across blur (keyboard shortcuts need it); `is_active` flips off every
-    /// frame and only flips on for the table whose cell matches.
+    /// per-frame focus synchronization with iced
     pub fn sync_focused_cell(&mut self, focused_id: Option<&WidgetId>) {
         for block in self.registry.values_mut() {
             if let Some(tb) = block.as_any_mut().downcast_mut::<TableBlock>() {
@@ -1400,21 +1242,12 @@ impl EditorState {
         }
     }
 
-    /// A non-eval table currently has a selected cell. Used by handle.rs to
-    /// gate keyboard interception of arrow keys, Tab, Enter, Backspace etc.
-    /// Keys off `focused_cell` (logical selection, preserved across blur),
-    /// NOT `is_active` (which only tracks whether iced widget focus is in the
-    /// cell text_input — true only during edit mode).
+    /// returns true when a non-eval table has a selected cell
     pub(crate) fn active_table_index(&self) -> Option<usize> {
         self.focused_table_index()
     }
 
-    /// True iff the editor's *currently focused block* is a non-eval table
-    /// that has a selected cell. This is the right gate for any table-specific
-    /// keybinding — `focused_table_index()` would also return Some for a
-    /// table whose selection was set on a previous click but where focus has
-    /// since moved to a text block, which would cause the table to silently
-    /// steal arrow keys / Backspace / Cmd+Backspace from the text block.
+    /// returns true when the focused block is a non-eval table
     pub(crate) fn table_is_focused_block(&self) -> bool {
         if let Some(block) = self.block_at(self.focused_block) {
             if let Some(tb) = block.as_any().downcast_ref::<TableBlock>() {
@@ -1424,9 +1257,7 @@ impl EditorState {
         false
     }
 
-    /// True iff the focused block is a table currently in whole-table
-    /// select-all mode. handle.rs uses this to route plain Backspace to
-    /// "clear all cells" and Cmd+Backspace to "delete the entire table."
+    /// returns true when the focused block is a table in whole-table-select mode
     pub(crate) fn focused_table_is_select_all(&self) -> bool {
         if let Some(block) = self.block_at(self.focused_block) {
             if let Some(tb) = block.as_any().downcast_ref::<TableBlock>() {
@@ -1436,9 +1267,7 @@ impl EditorState {
         false
     }
 
-    /// Returns (block_idx, row, total_rows) for the currently active table's
-    /// focused cell, or None if no table is active. handle.rs uses the
-    /// total_rows to detect "Down arrow on the last row" for edge-escape.
+    /// returns (block_idx, row, total_rows) for the focused cell's table
     pub(crate) fn active_table_focused_row(&self) -> Option<(usize, usize, usize)> {
         let idx = self.active_table_index()?;
         let tb = self.table_block_at(idx)?;
@@ -1446,17 +1275,7 @@ impl EditorState {
         Some((idx, r, tb.rows.len()))
     }
 
-    /// Returns the index of the editor's currently focused block IF it's a
-    /// table with a selected cell. Returns None if focus is on a text block,
-    /// heading, etc. — even if some other table somewhere in the document
-    /// has `focused_cell` set (which is common since `focused_cell` is
-    /// preserved across blur so users can click back into a prior table and
-    /// have their selection restored).
-    ///
-    /// All table-targeted operations (DeleteCurrentTable, FocusedTableOp,
-    /// TableTab/Enter/Move*, EnterCellEditWithChar, ClearSelectedCell) use
-    /// this — so they all consistently mean "the table the user is in right
-    /// now," not "the topmost table that has ever been touched."
+    /// returns the focused block index when it's a table
     pub(crate) fn focused_table_index(&self) -> Option<usize> {
         let block = self.block_at(self.focused_block)?;
         let tb = block.as_any().downcast_ref::<TableBlock>()?;
@@ -1467,14 +1286,7 @@ impl EditorState {
         }
     }
 
-    /// True iff the editor's *currently focused block* is a table with a
-    /// selected cell that's not in edit mode. handle.rs uses this to decide
-    /// whether to intercept printable keys for "type to enter edit mode."
-    ///
-    /// MUST check `focused_block` rather than "any table has focused_cell" —
-    /// `focused_cell` is intentionally preserved across blur so clicking
-    /// back into a table restores selection, which means it can't double as
-    /// a "currently active" signal.
+    /// returns true when the focused block is a table with a focused cell
     pub(crate) fn has_selected_cell_not_editing(&self) -> bool {
         if self.editing.is_some() {
             return false;
@@ -1488,11 +1300,7 @@ impl EditorState {
         !tb.is_eval_result && tb.focused_cell.is_some()
     }
 
-    /// True when handle.rs should intercept Cmd+C and route it to the
-    /// table-cell copy path instead of letting iced's text widget handle it.
-    /// Conditions: focused block is a table; not currently editing a cell
-    /// (cell-edit mode delegates to text_input's own copy); and either a
-    /// selection is non-empty or a spillover popup is open.
+    /// returns true when Cmd+C should copy the table selection instead of cell text
     pub(crate) fn should_intercept_table_copy(&self) -> bool {
         if self.editing.is_some() { return false; }
         let Some(block) = self.block_at(self.focused_block) else { return false; };
@@ -1500,9 +1308,7 @@ impl EditorState {
         !tb.selection.is_empty() || tb.spillover.is_some()
     }
 
-    /// Build the clipboard payload from the focused table — selection takes
-    /// precedence over spillover; spillover provides the single-cell payload
-    /// when no explicit selection exists. None if neither applies.
+    /// builds the clipboard payload from the focused table
     fn copy_focused_table_selection(&self) -> Option<String> {
         let block = self.block_at(self.focused_block)?;
         let tb = block.as_any().downcast_ref::<TableBlock>()?;
@@ -1523,8 +1329,6 @@ impl EditorState {
             self.eval_dirty = false;
             self.run_eval();
         }
-        // Cursor-line-change trigger: when the cursor moves to a different
-        // line (arrow keys, click, etc.) without an edit, re-evaluate.
         {
             let block_start = self.layout.get(self.focused_block)
                 .and_then(|id| self.registry.get(id))
@@ -1539,9 +1343,6 @@ impl EditorState {
                 }
             }
         }
-        // Fire the long-press copy at the threshold — if the user is still
-        // holding past LONG_PRESS_MS without having released, double-clicked,
-        // or moved off, drop the result onto the clipboard.
         let due = self.inline_press.as_ref().is_some_and(|s| {
             !s.fired_long_press && s.started_at.elapsed().as_millis() >= LONG_PRESS_MS
         });
@@ -1553,8 +1354,6 @@ impl EditorState {
                 self.copy_inline_result(bid, line);
             }
         }
-        // Table hover-to-spillover dwell: each table polls its own armed
-        // timer and opens the popup once the 3s threshold passes.
         let block_ids: Vec<crate::selection::BlockId> = self.layout.clone();
         for id in block_ids {
             if let Some(block) = self.registry.get_mut(&id) {
@@ -1565,9 +1364,7 @@ impl EditorState {
         }
     }
 
-    /// True if an eval debounce is still pending. Used by handle::render to keep
-    /// the vsync loop ticking through the debounce window even when no new input
-    /// is arriving, so tick() eventually fires run_eval.
+    /// returns true while an eval debounce is pending
     pub fn has_pending_eval(&self) -> bool {
         self.eval_dirty
             || self.inline_press.as_ref().is_some_and(|s| !s.fired_long_press)
@@ -1584,8 +1381,6 @@ impl EditorState {
         self.rebuild_modules();
     }
 
-    /// Build the BlockInfo slice used by module/table detection.
-    /// Shared between `rebuild_modules` and `register_visible_tables`.
     fn build_block_infos(&self) -> Vec<crate::module::BlockInfo> {
         use crate::heading_block::HeadingBlock;
         use crate::module::BlockInfo;
@@ -1602,7 +1397,7 @@ impl EditorState {
         }).collect()
     }
 
-    /// Rebuild the module list and apply table naming from headings.
+    /// rebuilds the module list and applies heading-based table names
     fn rebuild_modules(&mut self) {
         use crate::module::{compute_modules, detect_table_names};
 
@@ -1619,10 +1414,7 @@ impl EditorState {
         }
     }
 
-    /// Register every non-eval-result table in the document on the
-    /// interpreter under all names it's reachable by from the focused
-    /// block's module. Also sets `current_block` on the interp so bare
-    /// H4 refs resolve correctly.
+    /// registers every non-eval-result table on the interpreter and returns the alias index
     fn register_visible_tables(
         &self,
         interp: &mut acord_core::interp::Interpreter,
@@ -1659,9 +1451,6 @@ impl EditorState {
             let heading = table_names.iter().find(|a| a.table_id == *table_id);
             let module_name = block_to_module.get(table_id).cloned();
 
-            // Canonical key (used as `current_table` anchor when evaluating
-            // formulas inside this table): heading name when global/present,
-            // `module::heading` for H4, positional as final fallback.
             let canonical_key = match heading {
                 Some(h) => {
                     let hname = normalize_name(&h.name);
@@ -1680,15 +1469,10 @@ impl EditorState {
             };
             canonical.insert(*table_id, canonical_key.clone());
 
-            // Build the full set of keys this table is reachable by.
             let mut keys: Vec<String> = vec![pos_name.to_lowercase(), canonical_key.clone()];
             if let Some(h) = heading {
                 let hname = normalize_name(&h.name);
                 if h.scope == TableNameScope::BlockScoped {
-                    // Also expose bare heading for refs FROM inside the
-                    // owning module (resolve_table_key_fallback also handles
-                    // this, but registering explicitly avoids the fallback
-                    // hop and disambiguates collisions between modules).
                     if module_name.as_deref() == focused_module_name.as_deref() {
                         keys.push(hname);
                     }
@@ -1709,9 +1493,7 @@ impl EditorState {
         TableIndex { keys: keys_map, canonical }
     }
 
-    /// True if any non-eval-result table in the document has at least one
-    /// cell whose text starts with `/=`. Used to early-out `run_eval` when
-    /// neither text blocks nor tables have anything to evaluate.
+    /// returns true if any visible table contains a `/=` formula cell
     fn any_visible_cell_formulas(&self) -> bool {
         for block in self.registry.values() {
             if let Some(tb) = block.as_any().downcast_ref::<TableBlock>() {
@@ -1724,11 +1506,7 @@ impl EditorState {
         false
     }
 
-    /// Parse, topo-sort, and evaluate every cell formula across visible
-    /// tables. Results land in `self.computed_cells`; cycles yield
-    /// `Value::Error("cycle")`. Also threads computed values back into
-    /// `interp`'s table registry so subsequent text-block reads see the
-    /// formula result rather than the raw `/=...` string.
+    /// parses, topo-sorts, and evaluates every visible cell formula
     fn evaluate_cell_formulas(
         &mut self,
         interp: &mut acord_core::interp::Interpreter,
@@ -1761,9 +1539,6 @@ impl EditorState {
                 for (c, cell) in row.iter().enumerate() {
                     let trimmed = cell.trim_start();
                     let Some(body) = trimmed.strip_prefix("/=") else { continue };
-                    // The interpreter's spice flag reflects any `use spice`
-                    // already executed in the code blocks for this module.
-                    // Formulas inside tables inherit that flag.
                     match parse_formula_with_spice(body, interp.spice_enabled()) {
                         Ok(ast) => formulas.push(Cell {
                             table_key: canonical.clone(),
@@ -1778,9 +1553,6 @@ impl EditorState {
             }
         }
 
-        // Clear prior computed values for visible tables only — tables
-        // outside the focused module's scope keep their stale results so
-        // their cells don't flash blank between cross-module evals.
         self.computed_cells.retain(|k, _| !seen_blocks.contains(&k.0));
 
         for (bid, c, r, e) in parse_errors {
@@ -1791,9 +1563,6 @@ impl EditorState {
             return;
         }
 
-        // Build dep graph. Node i is formulas[i]. Edge dep_idx → i means
-        // formula i reads the cell that formula dep_idx computes — so
-        // dep_idx must evaluate first.
         let node_key: HashMap<(String, u32, u32), usize> = formulas.iter().enumerate()
             .map(|(i, f)| ((f.table_key.clone(), f.col, f.row), i))
             .collect();
@@ -1841,12 +1610,8 @@ impl EditorState {
             };
             interp.set_current_table(None);
 
-            // Thread the computed value back into the interpreter's table
-            // registry so subsequent formulas AND text-block reads see it
-            // instead of the raw `/=...` string.
             if !result.is_error() {
                 let display = result.display();
-                // Write into every alias of this table.
                 for (alias_key, &bid) in &table_index.keys {
                     if bid == f.block_id {
                         interp.write_cell_raw(alias_key, f.col, f.row, &display);
@@ -1863,9 +1628,7 @@ impl EditorState {
         }
     }
 
-    /// Apply cell writes logged by the interpreter to the live TableBlocks.
-    /// Writes land in `rows[r][c]` and grow the table as needed (strict
-    /// bounds would discourage using formulas to populate empty cells).
+    /// applies cell writes logged by the interpreter to live tables
     fn apply_table_writes(
         &mut self,
         writes: Vec<acord_core::interp::TableWrite>,
@@ -1885,9 +1648,7 @@ impl EditorState {
         }
     }
 
-    /// Check if block structure changed after an edit. Serializes current
-    /// blocks, re-parses, applies an incremental diff, then re-seats the
-    /// focused block index against the post-reparse layout.
+    /// returns true when an edit changed the block structure
     fn check_block_structure(&mut self) {
         let cursor = self.content().cursor();
         let full = self.full_text();
@@ -1909,18 +1670,7 @@ impl EditorState {
         self.rebuild_modules();
     }
 
-    /// Wrap a selection in matching delimiters or unwrap an existing pair.
-    /// Used by Cmd+B (`**`), Cmd+I (`*`), Cmd+~ (`~~`), Cmd+", etc.
-    ///
-    /// Unwrap detection looks at characters IMMEDIATELY outside the
-    /// selection, not just inside it — so the selection can be the inner
-    /// text (without markers) and Cmd+B still toggles off.
-    ///
-    /// Star-marker parity rule: bold (`**`) unwraps when the surrounding
-    /// star count on each side is >= 2 AND even (2 → 0, 4 → 2, …).
-    /// Italic (`*`) unwraps when the count is odd (1, 3, 5 …). This
-    /// keeps `**bold**` + Cmd+I → wraps to `***bold***` (bold-italic),
-    /// not destructive; and `***both***` + Cmd+B → `*both*` (strips bold).
+    /// wraps a selection in matching delimiters or unwraps an existing pair
     fn toggle_wrap(&mut self, open: &str, close: &str) {
         let text = self.content().text();
         let cursor = self.content().cursor();
@@ -1928,7 +1678,6 @@ impl EditorState {
         let (start, end) = match self.selection_byte_range(&text, pos) {
             Some(range) => range,
             None => {
-                // No selection: insert paired markers and park cursor between.
                 let s = format!("{open}{close}");
                 self.content_mut().perform(text_widget::Action::Edit(
                     text_widget::Edit::Paste(Arc::new(s)),
@@ -1948,7 +1697,6 @@ impl EditorState {
         let star_marker = open.chars().all(|c| c == '*') && close == open;
         if star_marker {
             let mlen = open.len();
-            // Sym-strip when markers are inside the selection itself.
             if selected.starts_with(open) && selected.ends_with(close) && selected.len() >= mlen * 2 {
                 let inner = &selected[mlen..selected.len() - mlen];
                 self.content_mut().perform(text_widget::Action::Edit(
@@ -1968,7 +1716,6 @@ impl EditorState {
                 return;
             }
         } else {
-            // Non-star markers: simple symmetric strip.
             let olen = open.len();
             let clen = close.len();
             if selected.starts_with(open) && selected.ends_with(close) && selected.len() >= olen + clen {
@@ -1985,7 +1732,6 @@ impl EditorState {
             }
         }
 
-        // Default: wrap.
         let wrapped = format!("{open}{selected}{close}");
         self.content_mut().perform(text_widget::Action::Edit(
             text_widget::Edit::Paste(Arc::new(wrapped)),
@@ -1993,9 +1739,7 @@ impl EditorState {
         self.reparse();
     }
 
-    /// Replace a byte range in the current content with `replacement`. Used
-    /// by toggle_wrap's unwrap path so we can rewrite text that sits OUTSIDE
-    /// the selection (the surrounding markers).
+    /// replaces a byte range in the current content with `replacement`
     fn replace_range(&mut self, start: usize, end: usize, replacement: &str) {
         let text = self.content().text();
         if start > end || end > text.len() { return; }
@@ -2003,16 +1747,12 @@ impl EditorState {
         new_text.push_str(&text[..start]);
         new_text.push_str(replacement);
         new_text.push_str(&text[end..]);
-        // Rebuild the content with the new text and place cursor at end of
-        // replacement so successive toggles continue to operate at the
-        // same logical spot.
         let cursor_byte = start + replacement.len();
         self.content_mut().perform(text_widget::Action::Move(Motion::DocumentStart));
         self.content_mut().perform(text_widget::Action::Select(Motion::DocumentEnd));
         self.content_mut().perform(text_widget::Action::Edit(
             text_widget::Edit::Paste(Arc::new(new_text.clone())),
         ));
-        // Position cursor at byte offset cursor_byte by walking from start.
         let target = line_col_for_byte(&new_text, cursor_byte);
         self.content_mut().perform(text_widget::Action::Move(Motion::DocumentStart));
         for _ in 0..target.0 {
@@ -2025,35 +1765,22 @@ impl EditorState {
         self.reparse();
     }
 
-    /// Compute the byte range of the current selection (start, end) or None
-    /// when no selection is active.
+    /// returns the byte range of the current selection, or None
     fn selection_byte_range(&self, text: &str, _cursor_pos: usize) -> Option<(usize, usize)> {
         let sel = self.content().selection()?;
-        // We need the start position; use cursor + selection length to
-        // bracket. Selection is the text between selection-start and cursor;
-        // search both directions in the buffer to find a unique location.
-        // For toggle_wrap's purposes, we use the cursor position as the END
-        // and walk back by sel.len() to find start. This is correct when
-        // selection extends backward from the cursor; otherwise we fall
-        // back to a forward search.
         let cursor = self.content().cursor();
         let cursor_byte = byte_offset_for_cursor(text, &cursor.position);
         let len = sel.len();
-        // Try cursor at end of selection.
         if cursor_byte >= len && &text[cursor_byte - len..cursor_byte] == sel.as_str() {
             return Some((cursor_byte - len, cursor_byte));
         }
-        // Try cursor at start of selection.
         if cursor_byte + len <= text.len() && &text[cursor_byte..cursor_byte + len] == sel.as_str() {
             return Some((cursor_byte, cursor_byte + len));
         }
-        // Fall back to searching the doc.
         text.find(sel.as_str()).map(|s| (s, s + len))
     }
 
-    /// Insert paired delimiters at the cursor and place the caret between
-    /// them. Used for `[` → `[|]` and `{` → `{|}`. Quotes/parens are
-    /// deliberately NOT auto-paired.
+    /// inserts paired delimiters and places the caret between them
     fn auto_pair(&mut self, open: &str, close: &str) {
         let combined = format!("{open}{close}");
         self.content_mut().perform(text_widget::Action::Edit(
@@ -2064,15 +1791,12 @@ impl EditorState {
         }
     }
 
-    /// Toggle blockquote prefix on the current line(s). With a selection
-    /// spanning multiple lines, prefix `> ` to each; if every line already
-    /// has `> `, strip it.
+    /// toggles the `> ` blockquote prefix on the current line
     fn toggle_blockquote(&mut self) {
         let text = self.content().text();
         let cursor = self.content().cursor();
         let lines: Vec<&str> = text.lines().collect();
         let cur_line = cursor.position.line.min(lines.len().saturating_sub(1));
-        // Single-line toggle: simplest meaningful form.
         if cur_line >= lines.len() { return; }
         let line = lines[cur_line];
         let mut new_lines: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
@@ -2090,7 +1814,7 @@ impl EditorState {
         self.reparse();
     }
 
-    /// Cmd+0 catch-all. See `Message::FixUp` for the spec.
+    /// incremental scope-exit and newline-sandwich placement
     fn fix_up(&mut self) {
         let text = self.content().text();
         let cursor = self.content().cursor();
@@ -2119,20 +1843,16 @@ impl EditorState {
         self.ensure_newline_sandwich();
     }
 
-    /// Move the cursor onto its own line with exactly one blank line of
-    /// padding above and below (3 newlines total around the caret), or up
-    /// to EOF on either side.
+    /// places the cursor on its own line with one blank line of padding above and below
     fn ensure_newline_sandwich(&mut self) {
         let text = self.content().text();
         let cursor = self.content().cursor();
         let pos = byte_offset_for_cursor(&text, &cursor.position);
-        // Walk back: collapse trailing whitespace/newlines before pos to "\n\n".
         let mut left = pos;
         while left > 0 {
             let c = text[..left].chars().rev().next().unwrap();
             if c == '\n' || c.is_whitespace() { left -= c.len_utf8(); } else { break; }
         }
-        // Walk forward: collapse leading whitespace/newlines after pos to "\n\n".
         let mut right = pos;
         while right < text.len() {
             let c = text[right..].chars().next().unwrap();
@@ -2165,9 +1885,7 @@ impl EditorState {
         self.full_text()
     }
 
-    /// Switch to editor mode: collapse all blocks into a single text block
-    /// containing the raw markdown. The single-block view path renders it
-    /// as a full-page text editor. Cmd+A then selects all text naturally.
+    /// switches to editor mode by collapsing all blocks into one text buffer
     pub fn enter_editor_mode(&mut self) {
         if self.render_mode == RenderMode::Editor { return; }
         self.push_undo_snapshot();
@@ -2184,8 +1902,6 @@ impl EditorState {
         self.computed_tables.clear();
         self.computed_trees.clear();
         self.computed_cells.clear();
-        // Select all text in the single editor so the user can immediately
-        // delete or type over it.
         self.content_mut().perform(Action::Move(Motion::DocumentStart));
         self.content_mut().perform(Action::Select(Motion::DocumentEnd));
         if let Some(tb) = self.text_block_at(0) {
@@ -2193,8 +1909,7 @@ impl EditorState {
         }
     }
 
-    /// Switch back to live mode: reparse the single text block into
-    /// structured blocks (headings, tables, HRs, etc.).
+    /// switches back to live mode and reparses the buffer into blocks
     pub fn exit_editor_mode(&mut self) {
         if self.render_mode != RenderMode::Editor { return; }
         let text = self.content().text();
@@ -2208,11 +1923,9 @@ impl EditorState {
         self.reparse();
     }
 
-    /// Switch to view mode: read-only rendered view. Press `i` for Editor,
-    /// `/` for Live.
+    /// switches to view mode
     pub fn enter_view_mode(&mut self) {
         if self.render_mode == RenderMode::View { return; }
-        // If coming from editor mode, reparse back to blocks first
         if self.render_mode == RenderMode::Editor {
             let text = self.content().text();
             let lang = self.lang_str();
@@ -2226,7 +1939,7 @@ impl EditorState {
         self.render_mode = RenderMode::View;
     }
 
-    /// Collect the concatenated text of all text blocks within a module.
+    /// returns the concatenated text of all text blocks in a module
     fn module_source_text(&self, module: &crate::module::Module) -> String {
         let mut parts = Vec::new();
         for &bid in &module.block_ids {
@@ -2239,8 +1952,7 @@ impl EditorState {
         parts.join("\n")
     }
 
-    /// Build an interpreter pre-populated with root module exports and
-    /// any `use`'d module exports for the block at `block_idx`.
+    /// builds an interpreter pre-populated with root and `use`'d module exports
     fn build_eval_interpreter(&self, block_idx: usize) -> acord_core::interp::Interpreter {
         use acord_core::interp;
 
@@ -2291,7 +2003,7 @@ impl EditorState {
         eval_interp
     }
 
-    /// Recursively evaluate a module with its `use` declarations resolved.
+    /// recursively evaluates a module with its `use` declarations resolved
     fn resolve_module_exports(
         &self,
         module: &crate::module::Module,
@@ -2334,7 +2046,6 @@ impl EditorState {
     fn run_eval(&mut self) {
         self.rebuild_modules();
 
-        // Find which module the focused block belongs to.
         let focused_id = match self.layout.get(self.focused_block) {
             Some(&id) => id,
             None => return,
@@ -2344,8 +2055,6 @@ impl EditorState {
             None => return,
         };
 
-        // Collect source text from the module's text blocks, tracking block
-        // boundaries so eval result line numbers can be mapped back to anchors.
         let mut source_parts: Vec<String> = Vec::new();
         let mut boundaries: Vec<(usize, crate::selection::BlockId)> = Vec::new();
         let mut cumulative = 0usize;
@@ -2364,7 +2073,6 @@ impl EditorState {
         }
         let source = source_parts.join("\n");
 
-        // Image scan runs regardless of eval content.
         self.scan_images(&boundaries, &block_ids);
 
         let has_text_eval = source.lines().any(|l| l.trim_start().starts_with("/="));
@@ -2378,22 +2086,15 @@ impl EditorState {
         let mut interp = self.build_eval_interpreter(self.focused_block);
         let table_keys = self.register_visible_tables(&mut interp, self.focused_block);
 
-        // Phase 1: evaluate cell formulas (reads current raw cell values).
-        // Formulas override their cell's registered value in the interpreter
-        // so phase 2 text-block reads see computed values, not /=... strings.
         self.evaluate_cell_formulas(&mut interp, &table_keys);
 
-        // Phase 2: evaluate text-block document.
         let doc = crate::eval::evaluate_document_with_interp(&mut interp, &source);
 
-        // Phase 3: apply text-block cell writes back to live TableBlocks.
         let writes = interp.drain_table_writes();
         self.apply_table_writes(writes, &table_keys);
 
-        // Clear previous results for this module's blocks.
         self.clear_layers_for_blocks(&block_ids);
 
-        // Distribute results to the appropriate layers.
         for r in &doc.results {
             let anchor = Self::map_line_to_anchor(&boundaries, r.line);
             if r.format == "table" {
@@ -2418,7 +2119,6 @@ impl EditorState {
                     }
                     _ => {}
                 }
-                // Table parse failed — fall through to inline result
                 self.eval_results.push(InlineResult {
                     anchor,
                     text: format!("{}{}", RESULT_PREFIX, r.result),
@@ -2456,20 +2156,14 @@ impl EditorState {
 
     }
 
-    /// Evaluate every module in document order. Each module gets a fresh
-    /// interpreter seeded with root exports (and its own `use` imports).
-    /// Used by Cmd+R, mode switches to Live/View, and file loads.
+    /// evaluates every module in document order
     fn run_eval_all(&mut self) {
         self.rebuild_modules();
-        // Clear all computed layers up front.
         self.eval_results.clear();
         self.computed_tables.clear();
         self.computed_trees.clear();
         self.computed_cells.clear();
 
-        // Evaluate each module in order by temporarily pointing focused_block
-        // at a text block within it, then calling run_eval() which already
-        // handles cross-module imports (root exports + `use` declarations).
         let saved = self.focused_block;
         let modules: Vec<crate::module::Module> = self.modules.clone();
         for module in &modules {
@@ -2487,11 +2181,7 @@ impl EditorState {
         self.pending_focus.take()
     }
 
-    /// Drain the accumulated wheel-scroll delta. handle.rs::render calls
-    /// this each frame and, if non-zero, runs a `scroll_by` operation
-    /// against the document scrollable. Returns None when no scroll has
-    /// been queued (so handle.rs can skip the operation entirely on idle
-    /// frames).
+    /// drains the accumulated wheel-scroll delta
     pub fn take_pending_scroll(&mut self) -> Option<f32> {
         if self.pending_scroll.abs() < f32::EPSILON {
             self.pending_scroll = 0.0;
@@ -2551,8 +2241,6 @@ impl EditorState {
     }
 
     fn restore_snapshot(&mut self, snap: &UndoSnapshot) {
-        // Bypass the undo-recording branch in set_text — we're in the middle of
-        // an undo/redo operation and don't want to pile new entries onto the stack.
         self.replace_text_no_undo(&snap.text);
         self.run_eval();
         self.safe_move_to(Cursor {
@@ -2625,11 +2313,7 @@ impl EditorState {
         });
     }
 
-    /// Whether `message` is safe to dispatch while the editor is in
-    /// `RenderMode::View`. Allowlist: scroll, click/drag selection,
-    /// find, copy, zoom, focus, navigation — anything that doesn't
-    /// touch document content. Edit-shaped `text_widget::Action`s and
-    /// every mutating top-level `Message` get dropped at the gate.
+    /// returns true when `message` is safe to dispatch in view mode
     fn message_is_view_safe(message: &Message) -> bool {
         match message {
             Message::SetRenderMode(_) => true,
@@ -2659,18 +2343,10 @@ impl EditorState {
     }
 
     pub fn update(&mut self, message: Message) {
-        // View mode: drop anything that would change the document. Mode
-        // switches, focus, scroll, click/drag selection, find, copy,
-        // navigation — all pass through. Allowlist; new mutating
-        // messages should fall through to the default `false` arm and
-        // get dropped.
         if self.render_mode == RenderMode::View && !Self::message_is_view_safe(&message) {
             return;
         }
 
-        // Drop whole-document selection on any message that isn't itself an
-        // operation on that selection. Click, key press, table action — all
-        // collapse the doc-wide selection back to single-block / single-cell.
         let preserve_doc_selection = matches!(
             &message,
             Message::SelectAllBlocks
@@ -2681,11 +2357,6 @@ impl EditorState {
             self.all_blocks_selected = false;
         }
 
-        // Drop the context menu on any message that isn't itself a context
-        // menu operation. Includes button clicks INSIDE the menu — they
-        // dispatch the action AND auto-clear in one shot. Clicking outside
-        // the menu (which generates a SelectCell or BlockAction) also
-        // dismisses for free.
         let preserve_context_menu = matches!(
             &message,
             Message::ShowContextMenu { .. }
@@ -2706,11 +2377,6 @@ impl EditorState {
 
                 if let Action::Scroll { lines } = &action {
                     let lh = self.line_height();
-                    // Single-block-mode gutter still uses scroll_offset for
-                    // its own scroll tracking. Keep this update so the gutter
-                    // doesn't desync. The multi-block path ignores this and
-                    // uses `pending_scroll` (forwarded to the outer
-                    // scrollable in handle.rs::render).
                     self.scroll_offset += *lines as f32 * lh;
                     self.scroll_offset = self.scroll_offset.max(0.0);
                     let focused_id = self.layout.get(self.focused_block).copied();
@@ -2719,17 +2385,9 @@ impl EditorState {
                         .unwrap_or(0.0);
                     let max = (self.content().line_count() as f32 - 1.0) * lh + items_h;
                     self.scroll_offset = self.scroll_offset.min(max.max(0.0));
-                    // Accumulate the pixel delta for the outer scrollable.
-                    // text_editor's `Action::Scroll` carries lines, not pixels —
-                    // multiply by line height. Multiple scroll events in one
-                    // frame stack up here.
                     self.pending_scroll += *lines as f32 * lh;
                 }
 
-                // Smart-backspace inside leading whitespace: with no
-                // selection, delete back to the previous tab stop in a
-                // single user-visible step. Mutually exclusive with
-                // handle_block_boundary's col-0 merge case (col > 0 here).
                 let smart_backspace_count: Option<usize> =
                     if matches!(&action, Action::Edit(text_widget::Edit::Backspace)) {
                         let cursor = self.content().cursor();
@@ -2785,9 +2443,6 @@ impl EditorState {
                     }
                 }
 
-                // Auto-indent on Enter. Compute AFTER perform(Enter), reading
-                // the line that was just split — that's the line whose
-                // indentation we want to inherit on the new line below it.
                 if is_enter && !handled_boundary {
                     let cursor = self.content().cursor();
                     if cursor.position.line > 0 {
@@ -2851,21 +2506,14 @@ impl EditorState {
                 ];
                 let new_id = blocks::next_id();
                 let mut new_table = TableBlock::new(new_id, rows, 0);
-                // Park focus on the first data cell (skip the header row) so
-                // the user lands ready to type values, not to edit headers.
                 new_table.focused_cell = Some((1, 0));
                 let new_block: BoxedBlock = Box::new(new_table);
 
                 let insert_at = (self.focused_block + 1).min(self.block_count());
                 self.insert_block(insert_at, new_block);
                 self.recount_block_lines();
-                // Land in edit mode on the first data cell so the user can
-                // type immediately. set_editing_cell handles index, central
-                // selection, and pending_focus in one shot.
                 self.set_editing_cell(insert_at, 1, 0);
                 self.reparse();
-                // Intentionally NOT calling run_eval() — see eval_segment_range
-                // for the destruction-class bug this avoids.
             }
             Message::ToggleBold => self.toggle_wrap("**", "**"),
             Message::ToggleItalic => self.toggle_wrap("*", "*"),
@@ -2971,8 +2619,6 @@ impl EditorState {
                 let mut lines: Vec<String> = clean.lines().map(|l| l.to_string()).collect();
                 if match_line < lines.len() {
                     let line = &lines[match_line];
-                    // Case-fold per-substring at the match column to avoid
-                    // byte-index divergence between line and line.to_lowercase().
                     let chars: Vec<(usize, char)> = line.char_indices().collect();
                     if match_col < chars.len() {
                         let window: String = chars[match_col..]
@@ -3011,10 +2657,6 @@ impl EditorState {
                 self.push_undo_snapshot();
                 self.redo_stack.clear();
 
-                // Case-fold per-substring via char iteration. Never index
-                // into a pre-lowercased copy — the byte layout can diverge
-                // for characters whose lowercase changes byte length (Turkish
-                // İ → "i\u{307}", German ß → "ss", etc.).
                 let clean = self.get_clean_text();
                 let query_lower = self.find.query.to_lowercase();
                 let query_char_count = query_lower.chars().count();
@@ -3054,7 +2696,6 @@ impl EditorState {
                         | TableMessage::AddRow
                         | TableMessage::AddColumn
                 );
-                // DeleteCol on a single-column table collapses to DeleteTable.
                 if matches!(&tmsg, TableMessage::DeleteCol) {
                     if let Some(tb) = self.table_block_at(idx) {
                         if !tb.is_eval_result
@@ -3065,10 +2706,6 @@ impl EditorState {
                         }
                     }
                 }
-                // The corner-cell delete affordance promotes straight to the
-                // top-level DeleteCurrentTable handler. We need to ensure the
-                // target table is the one focused before that runs — the
-                // click on the affordance counts as touching the table.
                 if matches!(&tmsg, TableMessage::DeleteTable) {
                     if let Some(tb) = self.table_block_at_mut(idx) {
                         if tb.focused_cell.is_none() {
@@ -3079,14 +2716,6 @@ impl EditorState {
                     self.update(Message::DeleteCurrentTable);
                     return;
                 }
-                // Right-click → ShowContextMenu. Before opening the menu,
-                // hoist focus to the right-clicked table+cell so subsequent
-                // `FocusedTableOp` actions (Insert/Delete row/col) target
-                // this table and so iced's focus machinery doesn't snap the
-                // scroll position back to whatever the prior focused block
-                // was. Pre-existing multi-cell selection IS preserved —
-                // only `focused_block` and the right-clicked cell's
-                // `focused_cell` are updated, not the selection HashSet.
                 if let TableMessage::ContextMenu(r, c) = &tmsg {
                     let (r, c) = (*r, *c);
                     if let Some(tb) = self.table_block_at_mut(idx) {
@@ -3097,9 +2726,6 @@ impl EditorState {
                     self.update(Message::ShowContextMenu { block_idx: idx });
                     return;
                 }
-                // SelectAll/ClearAll need editor-level housekeeping: SelectAll
-                // also marks the table as the focused block so the keyboard
-                // gates pick it up; ClearAll snapshots undo and re-runs eval.
                 let select_all = matches!(&tmsg, TableMessage::SelectAll);
                 let clear_all = matches!(&tmsg, TableMessage::ClearAll);
                 if clear_all {
@@ -3110,9 +2736,6 @@ impl EditorState {
                     self.push_undo_snapshot();
                 }
 
-                // SelectCell / EditCell are click-driven and need to also
-                // mutate the editor-level `editing` / `selection` / focus.
-                // Capture before tb.handle so we can call the helpers after.
                 let select_target = if let TableMessage::SelectCell(r, c) = &tmsg {
                     Some((*r, *c))
                 } else {
@@ -3124,8 +2747,6 @@ impl EditorState {
                     None
                 };
 
-                // Capture mods BEFORE the borrow so the click can be
-                // resolved into a SelectionMode without aliasing.
                 let mods = self.mods;
 
                 if let Some(tb) = self.table_block_at_mut(idx) {
@@ -3133,13 +2754,6 @@ impl EditorState {
                 }
 
                 if let Some((r, c)) = select_target {
-                    // Resolve the modifier-aware selection mode and apply it
-                    // to the table's HashSet selection. Click affects ONE
-                    // cell — rectangular range comes from drag, not click.
-                    //   no mod    → Replace (selection becomes just this cell)
-                    //   Cmd       → Toggle  (invert this cell's membership)
-                    //   Shift     → Add     (add this cell, never remove)
-                    //   Cmd+Shift → Remove  (remove this cell, never add)
                     let mode = if mods.logo() && mods.shift() {
                         crate::table_block::SelectionMode::Subtract
                     } else if mods.logo() {
@@ -3158,9 +2772,6 @@ impl EditorState {
                     self.set_editing_cell(idx, r, c);
                 }
                 if select_all {
-                    // Whole-table selection — focused block is this table,
-                    // editing is cleared. The table_selected flag was already
-                    // set by tb.handle above.
                     self.focused_block = idx;
                     self.editing = None;
                     if let Some(block) = self.block_at(idx) {
@@ -3216,8 +2827,6 @@ impl EditorState {
                 if cur_c + 1 >= col_count {
                     self.update(Message::TableMsg(idx, TableMessage::AddColumn));
                 }
-                // Tab keeps edit mode rolling forward so the user can type
-                // straight into the next cell without a second click.
                 self.set_editing_cell(idx, cur_r, cur_c + 1);
             }
             Message::TableShiftTab => {
@@ -3244,14 +2853,9 @@ impl EditorState {
                 self.escape_table_down(table_idx);
             }
             Message::ExitCellEdit => {
-                // Exit edit mode but keep the cell selected — same as
-                // Excel/Numbers' Escape behavior. The cell flips back to
-                // its static-text rendering on the next frame.
                 if let Some(path) = self.editing.clone() {
                     self.editing = None;
                     if let crate::selection::InnerPath::Cell { row, col } = path.inner {
-                        // Locate the table by id and re-park focus on the
-                        // (now selected, not editing) cell.
                         for i in 0..self.block_count() {
                             if let Some(tb) = self.block_at(i).and_then(|b| b.as_any().downcast_ref::<TableBlock>()) {
                                 if tb.id == path.block_id {
@@ -3267,8 +2871,6 @@ impl EditorState {
                 let Some(idx) = self.focused_table_index() else { return };
                 let Some(tb) = self.table_block_at(idx) else { return };
                 let Some((r, col)) = tb.focused_cell else { return };
-                // Replace the cell content with just the typed character —
-                // Excel/Numbers "start typing into the selection" semantics.
                 if let Some(tb) = self.table_block_at_mut(idx) {
                     if r < tb.rows.len() && col < tb.rows[r].len() {
                         tb.rows[r][col] = c.to_string();
@@ -3347,11 +2949,6 @@ impl EditorState {
                 self.pending_focus = Some(table_block::cell_id(block_id, cur_r, cur_c + 1));
             }
             Message::ClearSelectedCell => {
-                // Empty every selected cell. Does nothing if there's no
-                // selection or if a cell is currently being edited (the
-                // text_input handles its own backspace). Honors the multi-cell
-                // selection HashSet first; falls back to single focused_cell
-                // if the HashSet is empty.
                 if self.editing.is_some() {
                     return;
                 }
@@ -3391,7 +2988,6 @@ impl EditorState {
                         } else if self.render_mode == RenderMode::View {
                             self.render_mode = RenderMode::Live;
                             self.reparse();
-                            // Restore keyboard focus to the focused text block.
                             if let Some(tb) = self.text_block_at(self.focused_block) {
                                 self.pending_focus = Some(block_editor_id(tb.id));
                             }
@@ -3406,9 +3002,6 @@ impl EditorState {
                 }
             }
             Message::ClearAllBlocks => {
-                // Plain Backspace/Delete with the whole document selected —
-                // wipe to a single empty text block, matching standard editor
-                // select-all + delete behavior.
                 self.push_undo_snapshot();
                 self.redo_stack.clear();
                 self.clear_blocks();
@@ -3427,10 +3020,6 @@ impl EditorState {
                 self.reparse();
             }
             Message::ShowContextMenu { block_idx } => {
-                // Anchor at the current cursor position. handle.rs writes
-                // self.cursor_pos before draining messages so this read is
-                // current. The position is in viewport coordinates — view_blocks
-                // uses it directly via container padding inside an iced stack.
                 self.context_menu = Some(ContextMenuState {
                     block_idx,
                     x: self.cursor_pos.x,
@@ -3449,9 +3038,6 @@ impl EditorState {
                 }
             }
             Message::DeleteAllBlocks => {
-                // Cmd+Backspace with the whole document selected — wipe to a
-                // single empty text block. Same destructive scope as
-                // selecting all in a regular editor and hitting Delete.
                 self.push_undo_snapshot();
                 self.redo_stack.clear();
                 self.clear_blocks();
@@ -3547,9 +3133,7 @@ impl EditorState {
         }
     }
 
-    /// Look up the inline result for `(block_id, after_line)` and return its
-    /// raw value text (the part after the `→ ` prefix). `None` if no result
-    /// is attached or the result is an error.
+    /// returns the inline result text for a given anchor
     fn inline_result_value(&self, block_id: crate::selection::BlockId, after_line: usize) -> Option<String> {
         let r = self.eval_results.iter().find(|r| {
             r.anchor.block_id == block_id && r.anchor.after_line == after_line && !r.is_error
@@ -3557,15 +3141,14 @@ impl EditorState {
         Some(r.text.trim_start_matches(RESULT_PREFIX).trim().to_string())
     }
 
-    /// Read line `line_idx` from the TextBlock with the given id, if any.
+    /// reads line `line_idx` from the text block with the given id
     fn read_line_at(&self, block_id: crate::selection::BlockId, line_idx: usize) -> Option<String> {
         let block = self.registry.get(&block_id)?;
         let tb = block.as_any().downcast_ref::<TextBlock>()?;
         tb.content.line(line_idx).map(|l| l.text.to_string())
     }
 
-    /// Copy `{line}  → {value}` to clipboard. Used by both long-press (just
-    /// copy) and double-click (copy then insert template).
+    /// copies `{source}  → {value}` to the clipboard
     fn copy_inline_result(&mut self, block_id: crate::selection::BlockId, after_line: usize) {
         let value = match self.inline_result_value(block_id, after_line) {
             Some(v) => v,
@@ -3576,9 +3159,7 @@ impl EditorState {
         self.pending_clipboard = Some(format!("{trimmed}  {RESULT_PREFIX}{value}"));
     }
 
-    /// Double-click on a result: copy + drop a `let  = value` line two lines
-    /// below the source `/=`. Cursor lands right after `let ` so the user can
-    /// type the variable name.
+    /// copies the result and drops a `let _ = value` line below the source
     fn handle_result_extract(&mut self, block_id: crate::selection::BlockId, after_line: usize) {
         let value = match self.inline_result_value(block_id, after_line) {
             Some(v) => v,
@@ -3590,14 +3171,12 @@ impl EditorState {
             Some(i) => i,
             None => return,
         };
-        // Only TextBlocks accept text-buffer mutations through this path.
         if self.text_block_at(block_idx).is_none() { return; }
 
         self.push_undo_snapshot();
         self.redo_stack.clear();
         self.set_focused_block(block_idx);
 
-        // Move cursor to end of the source `/=` line.
         let content = self.content_mut();
         content.perform(Action::Move(Motion::DocumentStart));
         for _ in 0..after_line {
@@ -3605,13 +3184,9 @@ impl EditorState {
         }
         content.perform(Action::Move(Motion::End));
 
-        // Drop a blank line then `let  = value`. Two spaces between `let` and
-        // `=` — the user types the variable name into the gap.
         let paste = format!("\n\nlet  = {value}");
         content.perform(Action::Edit(text_widget::Edit::Paste(Arc::new(paste))));
 
-        // Cursor is at the end of `value`. Walk back past `value`, the `=`,
-        // and the two flanking spaces — landing right after `let `.
         let back = 3 + value.chars().count();
         for _ in 0..back {
             content.perform(Action::Move(Motion::Left));
@@ -3802,11 +3377,6 @@ impl EditorState {
                     global_line += line_count;
                     let _ = line_h; // text_widget::layout owns the height now
 
-                    // Length::Shrink lets text_widget::layout publish the
-                    // actual rendered height (visual_rows × line_h + items
-                    // + padding). Computing it here from logical line count
-                    // undercounts when wrap fires, which leaves the next
-                    // block sitting on top of this block's tail.
                     let editor = text_widget::TextEditor::new(&tb.content)
                         .id(block_editor_id(tb.id))
                         .on_action(move |action| Message::BlockAction(block_idx, action))
@@ -3856,8 +3426,6 @@ impl EditorState {
 
             if let Some(tab) = any.downcast_ref::<TableBlock>() {
                 let block_idx = bi;
-                // Translate the central `editing` path into a (row, col) for
-                // this specific table, so the renderer can branch each cell.
                 let editing_cell = match self.editing.as_ref() {
                     Some(path) if path.block_id == tab.id => match &path.inner {
                         crate::selection::InnerPath::Cell { row, col } => Some((*row, *col)),
@@ -3878,11 +3446,6 @@ impl EditorState {
                 continue;
             }
 
-            // Heading / HR / Tree go through the trait `view` method via a
-            // per-iteration ViewCtx. The new trait signature decouples the
-            // returned LayeredView's lifetime from `ctx`, so a stack-local
-            // ViewCtx is fine — implementations must read what they need from
-            // ctx into Copy locals and not capture ctx into the element.
             let ctx: ViewCtx<'_, Message> = ViewCtx {
                 block_index: bi,
                 selection: &self.selection,
@@ -3934,10 +3497,6 @@ impl EditorState {
             .into()
         };
 
-        // Whole-document selection visual: tint the entire content area blue.
-        // The container only paints background — it doesn't intercept clicks,
-        // so the underlying blocks remain interactive (which is intentional:
-        // a click anywhere drops the selection back to single-block scope).
         let inner: Element<'_, Message, Theme, iced_wgpu::Renderer> = if self.all_blocks_selected {
             let p = palette::current();
             iced_widget::container(inner)
@@ -3955,11 +3514,6 @@ impl EditorState {
             inner
         };
 
-        // Context menu overlay. Stacked above the main content; positioned
-        // at the cursor anchor via container padding from top-left. Clicks
-        // anywhere outside the menu hit the main content (still alive on
-        // the layer below) AND auto-clear the menu via update()'s top-of-loop
-        // drop logic.
         let with_ctx: Element<'_, Message, Theme, iced_wgpu::Renderer> =
             if let Some(menu_state) = &self.context_menu {
                 iced_widget::stack![inner, self.context_menu_view(menu_state)].into()
@@ -3967,8 +3521,6 @@ impl EditorState {
                 inner
             };
 
-        // Spillover popup overlay — opens when wrap is off and the user
-        // clicks a clipped cell. Only one is open at a time per editor.
         if let Some(popup) = self.spillover_view() {
             iced_widget::stack![with_ctx, popup].into()
         } else {
@@ -3976,10 +3528,7 @@ impl EditorState {
         }
     }
 
-    /// Find the first table block with an open spillover and render its
-    /// popup. Returns None when no spillover is active. The popup is
-    /// fixed-positioned at the top-center of the viewport — close enough
-    /// for now; cell-anchored positioning is a polish pass away.
+    /// renders the spillover popup of the first table that has one open
     fn spillover_view(&self) -> Option<Element<'_, Message, Theme, iced_wgpu::Renderer>> {
         let p = palette::current();
         let cell_text = self.layout.iter()
@@ -4045,9 +3594,6 @@ impl EditorState {
             snap: false,
         });
 
-        // Position via Shrink-sized leading spacers (same trick as the
-        // context menu overlay) — Fill+padding triggers a viewport-wide
-        // re-layout on every popup open and steals events.
         let popup_el: Element<'_, Message, Theme, iced_wgpu::Renderer> = popup.into();
         let v_spacer = iced_widget::Space::new()
             .width(Length::Shrink)
@@ -4064,7 +3610,7 @@ impl EditorState {
         )
     }
 
-    /// Get (after_line, height) offset pairs for a block's anchored items.
+    /// returns (after_line, height) offset pairs for a block's anchored items
     fn item_offsets(&self, block_id: crate::selection::BlockId) -> Vec<(usize, f32)> {
         let lh = self.line_height();
         self.collect_layer_items(block_id)
@@ -4075,7 +3621,7 @@ impl EditorState {
 
 
 
-    /// Collect all layer items for a block into a sorted vec of (after_line, item).
+    /// returns layer items for a block sorted by anchor line
     fn collect_layer_items(&self, block_id: crate::selection::BlockId) -> Vec<(usize, LayerItem<'_>)> {
         let mut items: Vec<(usize, LayerItem<'_>)> = Vec::new();
         for r in &self.eval_results {
@@ -4102,8 +3648,7 @@ impl EditorState {
         items
     }
 
-    /// Build anchored child Elements for the text widget compositor.
-    /// Converts layer items into AnchoredItem structs with pre-built Elements.
+    /// builds anchored child elements for the text widget compositor
     fn build_anchored_items<'a>(
         &'a self,
         block_id: crate::selection::BlockId,
@@ -4116,17 +3661,45 @@ impl EditorState {
         for (after_line, item) in &items {
             match item {
                 LayerItem::Inline(r) => {
-                    let color = if r.is_error { p.red } else { p.green };
-                    let inner = iced_widget::container(
-                        iced_widget::text(&r.text)
-                            .font(syntax::EDITOR_FONT)
-                            .size(self.font_size)
-                            .color(oklab::lighten_for_size(color, self.font_size))
-                    )
-                    .padding(Padding { top: 0.0, right: 8.0, bottom: 0.0, left: 40.0 })
-                    .width(Length::Fill);
-                    // Errors don't carry a copyable result value, so they
-                    // don't get the gesture wrapper.
+                    let inner = if r.is_error {
+                        iced_widget::container(
+                            iced_widget::text(&r.text)
+                                .font(syntax::EDITOR_FONT)
+                                .size(self.font_size)
+                                .color(oklab::lighten_for_size(p.red, self.font_size))
+                        )
+                        .padding(Padding { top: 0.0, right: 8.0, bottom: 0.0, left: 40.0 })
+                        .width(Length::Fill)
+                    } else {
+                        let value = r.text
+                            .strip_prefix(RESULT_PREFIX)
+                            .unwrap_or(&r.text)
+                            .to_string();
+                        let arrow_color = oklab::lighten_for_size(palette::eval_arrow_color(), self.font_size);
+                        let value_color = oklab::lighten_for_size(palette::eval_value_color(), self.font_size);
+                        let bold = Font {
+                            weight: iced_wgpu::core::font::Weight::Bold,
+                            ..syntax::EDITOR_FONT
+                        };
+                        let row = iced_widget::row![
+                            iced_widget::text("→ ")
+                                .font(syntax::EDITOR_FONT)
+                                .size(self.font_size)
+                                .color(arrow_color),
+                            iced_widget::text(value)
+                                .font(bold)
+                                .size(self.font_size)
+                                .color(value_color),
+                            iced_widget::text(" ←")
+                                .font(syntax::EDITOR_FONT)
+                                .size(self.font_size)
+                                .color(arrow_color),
+                        ]
+                        .spacing(0.0);
+                        iced_widget::container(row)
+                            .padding(Padding { top: 0.0, right: 8.0, bottom: 0.0, left: 40.0 })
+                            .width(Length::Fill)
+                    };
                     let el: Element<'a, Message, Theme, iced_wgpu::Renderer> = if r.is_error {
                         inner.into()
                     } else {
@@ -4208,7 +3781,6 @@ impl EditorState {
                             .width(Length::Fill)
                             .into()
                         } else {
-                            // Placeholder while loading or on failure.
                             iced_widget::container(
                                 iced_widget::text(format!("[image: {}]", img.alt))
                                     .font(syntax::EDITOR_FONT)
@@ -4231,9 +3803,7 @@ impl EditorState {
         anchored
     }
 
-    /// Build the context menu overlay for a right-clicked cell. Returns a
-    /// fill container that holds the actual menu in the top-left corner of
-    /// a padded region — padding (top: y, left: x) anchors it to the click.
+    /// builds the context menu overlay for a right-clicked cell
     fn context_menu_view(
         &self,
         state: &ContextMenuState,
@@ -4332,11 +3902,6 @@ impl EditorState {
             snap: false,
         });
 
-        // Position via shrink-sized leading spacers, NOT a Fill container with
-        // padding. Fill+padding triggers a viewport-wide re-layout on every
-        // menu open, which jumps the scrollable and swallows events on the
-        // overlay layer. Shrink sizing keeps the overlay limited to its own
-        // bounds, so clicks outside pass through to the scrollable beneath.
         let menu_element: Element<'_, Message, Theme, iced_wgpu::Renderer> = menu.into();
         let v_spacer = iced_widget::Space::new()
             .width(Length::Shrink)
@@ -4484,8 +4049,6 @@ fn context_menu_item_style(
     }
 }
 
-// Strip obsolete inline-result lines from documents saved before eval
-// results moved into anchored child elements.
 
 fn is_result_line(line: &str) -> bool {
     let trimmed = line.trim_start();
@@ -4543,7 +4106,6 @@ fn macos_key_binding(key_press: KeyPress) -> Option<Binding<Message>> {
         keyboard::Key::Character("-") if modifiers.logo() => {
             Some(Binding::Custom(Message::ZoomOut))
         }
-        // Cmd+0 lives in handle.rs now (FixUp); Cmd+Shift+0 resets zoom.
         keyboard::Key::Character("[") if !modifiers.logo() && !modifiers.alt() && !modifiers.control() && auto_pair::enabled(auto_pair::BRACKET) => {
             Some(Binding::Custom(Message::AutoPair("[", "]")))
         }
@@ -4655,18 +4217,17 @@ fn leading_whitespace(line: &str) -> &str {
     &line[..end]
 }
 
-/// Count consecutive trailing occurrences of `c` at the end of `s`.
+/// counts consecutive trailing occurrences of `c` in `s`
 fn count_trailing_char(s: &str, c: char) -> usize {
     s.chars().rev().take_while(|&x| x == c).count()
 }
 
-/// Count consecutive leading occurrences of `c` at the start of `s`.
+/// counts consecutive leading occurrences of `c` in `s`
 fn count_leading_char(s: &str, c: char) -> usize {
     s.chars().take_while(|&x| x == c).count()
 }
 
-/// Convert an iced `Position { line, column }` to a byte offset within
-/// `text`. column is interpreted as char count (cosmic-text convention).
+/// converts a line/column position to a byte offset in `text`
 fn byte_offset_for_cursor(text: &str, pos: &text_widget::Position) -> usize {
     let mut byte = 0usize;
     for (line_idx, line) in text.split_inclusive('\n').enumerate() {
@@ -4681,7 +4242,7 @@ fn byte_offset_for_cursor(text: &str, pos: &text_widget::Position) -> usize {
     text.len()
 }
 
-/// Inverse of `byte_offset_for_cursor`. Returns (line, column).
+/// inverse of `byte_offset_for_cursor`
 fn line_col_for_byte(text: &str, byte: usize) -> (usize, usize) {
     let mut acc = 0usize;
     let mut line_idx = 0usize;
@@ -4697,10 +4258,7 @@ fn line_col_for_byte(text: &str, byte: usize) -> (usize, usize) {
     (last_line, text.lines().last().map(|l| l.chars().count()).unwrap_or(0))
 }
 
-/// Walk `text` left-to-right tracking a delimiter stack. Return the
-/// `close` char of the innermost still-open pair, or None if balanced.
-/// Pairs tracked: `()`, `[]`, `{}`. (Quotes/HTML are intentionally out
-/// of scope — too ambiguous in markdown.)
+/// walks `text` left-to-right tracking a delimiter stack
 fn innermost_unclosed_delim(text: &str) -> Option<char> {
     let mut stack: Vec<char> = Vec::new();
     for c in text.chars() {
@@ -4717,8 +4275,7 @@ fn innermost_unclosed_delim(text: &str) -> Option<char> {
     stack.last().copied()
 }
 
-/// Find the byte offset of the next outer scope's CLOSING delimiter
-/// after `pos`. Used by FixUp to step the cursor out one scope.
+/// returns the byte offset of the next outer scope's closing delimiter
 fn next_closing_delim_after(text: &str, pos: usize) -> Option<usize> {
     let mut depth: i32 = 0;
     let bytes = text.as_bytes();
@@ -4735,10 +4292,7 @@ fn next_closing_delim_after(text: &str, pos: usize) -> Option<usize> {
     None
 }
 
-/// Parse a markdown image reference `![alt](src)` from a line. Returns
-/// `(alt, src)` if found. Only matches if the `![` is the first
-/// non-whitespace on the line (inline images inside text are not rendered
-/// as block-level anchored items).
+/// parses a markdown image reference `![alt](src)` from a line
 fn parse_image_ref(line: &str) -> Option<(String, String)> {
     let trimmed = line.trim_start();
     if !trimmed.starts_with("![") { return None; }
@@ -4753,8 +4307,7 @@ fn parse_image_ref(line: &str) -> Option<(String, String)> {
     Some((alt, src))
 }
 
-/// Load an image. `src` may be `http(s)://`, `~/…`, or a filesystem path.
-/// Result is always PNG bytes regardless of source format.
+/// loads an image from a local path or http(s) URL
 fn load_image_from_path(src: &str) -> Option<ImageCacheEntry> {
     let raw = if src.starts_with("http://") || src.starts_with("https://") {
         let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -4779,10 +4332,7 @@ fn load_image_from_path(src: &str) -> Option<ImageCacheEntry> {
     Some(ImageCacheEntry { handle, width, height })
 }
 
-/// Encode a clipboard image (RGBA from `arboard`) to PNG and write it into
-/// `~/.acord/cache/images/{hash}.png`. Returns the absolute path as a
-/// String suitable for embedding in a `![]( … )` markdown reference.
-/// Content-addressed: re-pasting the same pixels reuses the same file.
+/// encodes a clipboard image to PNG and writes it into the on-disk cache
 pub fn write_clipboard_image_to_cache(img: &arboard::ImageData) -> Option<String> {
     let dir = dirs::home_dir()?.join(".acord").join("cache").join("images");
     std::fs::create_dir_all(&dir).ok()?;

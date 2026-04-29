@@ -17,6 +17,7 @@ use acord_viewport::{
     viewport_send_command, viewport_free_string,
     ViewportHandle,
 };
+use acord_viewport::browser::{self, BrowserHandle};
 
 use crate::config::Config;
 use crate::shortcuts::{match_shortcut, MenuAction};
@@ -31,6 +32,11 @@ pub struct App {
     current_file: Option<PathBuf>,
     last_autosave_attempt: Instant,
     last_autosaved_hash: Option<u64>,
+
+    browser_window: Option<Window>,
+    browser_handle: Option<BrowserHandle>,
+    browser_cursor: PhysicalPosition<f64>,
+    browser_scale: f32,
 }
 
 impl App {
@@ -45,6 +51,10 @@ impl App {
             current_file: None,
             last_autosave_attempt: Instant::now(),
             last_autosaved_hash: None,
+            browser_window: None,
+            browser_handle: None,
+            browser_cursor: PhysicalPosition::new(0.0, 0.0),
+            browser_scale: 1.0,
         }
     }
 
@@ -93,6 +103,154 @@ impl App {
                 }
             }
             MenuAction::ExportCrate => { /* TODO: wire crate export */ }
+            MenuAction::ToggleBrowser => self.toggle_browser(event_loop),
+        }
+    }
+
+    fn toggle_browser(&mut self, event_loop: &ActiveEventLoop) {
+        if self.browser_window.is_some() {
+            self.close_browser();
+        } else {
+            self.open_browser(event_loop);
+        }
+    }
+
+    fn open_browser(&mut self, event_loop: &ActiveEventLoop) {
+        let mut attrs = WindowAttributes::default()
+            .with_title("Documents - Acord")
+            .with_inner_size(LogicalSize::new(900.0, 650.0));
+        if let Some(icon) = load_window_icon() {
+            attrs = attrs.with_window_icon(Some(icon));
+        }
+        let window = match event_loop.create_window(attrs) {
+            Ok(w) => w,
+            Err(_) => return,
+        };
+        self.browser_scale = window.scale_factor() as f32;
+        let size = window.inner_size();
+        let w = size.width as f32 / self.browser_scale;
+        let h = size.height as f32 / self.browser_scale;
+
+        use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+        let display = match window.display_handle() {
+            Ok(d) => d.as_raw(),
+            Err(_) => return,
+        };
+        let win_handle = match window.window_handle() {
+            Ok(w) => w.as_raw(),
+            Err(_) => return,
+        };
+
+        let notes_dir = self.config.notes_dir();
+        let _ = std::fs::create_dir_all(&notes_dir);
+
+        match browser::handle::create(display, win_handle, w, h, self.browser_scale, notes_dir) {
+            Some(handle) => {
+                self.browser_handle = Some(handle);
+                self.browser_window = Some(window);
+            }
+            None => drop(window),
+        }
+    }
+
+    fn close_browser(&mut self) {
+        self.browser_handle = None;
+        self.browser_window = None;
+    }
+
+    fn drain_browser_open(&mut self) {
+        let Some(handle) = self.browser_handle.as_mut() else { return };
+        let Some(path) = browser::handle::take_pending_open(handle) else { return };
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            let c = CString::new(text).unwrap_or_default();
+            viewport_set_text(self.handle, c.as_ptr());
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("md");
+            let c_ext = CString::new(ext).unwrap();
+            viewport_set_lang(self.handle, c_ext.as_ptr());
+            if let Some(w) = &self.window {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("Acord");
+                w.set_title(&format!("{name} - Acord"));
+                w.focus_window();
+            }
+            self.current_file = Some(path);
+            self.last_autosaved_hash = None;
+        }
+        self.close_browser();
+    }
+
+    fn handle_browser_event(&mut self, event: WindowEvent) {
+        let Some(handle) = self.browser_handle.as_mut() else { return };
+
+        match event {
+            WindowEvent::CloseRequested => {
+                self.close_browser();
+            }
+            WindowEvent::Resized(size) => {
+                let w = size.width as f32 / self.browser_scale;
+                let h = size.height as f32 / self.browser_scale;
+                browser::handle::resize(handle, w, h, self.browser_scale);
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                self.browser_scale = scale_factor as f32;
+                if let Some(win) = &self.browser_window {
+                    let size = win.inner_size();
+                    let w = size.width as f32 / self.browser_scale;
+                    let h = size.height as f32 / self.browser_scale;
+                    browser::handle::resize(handle, w, h, self.browser_scale);
+                }
+            }
+            WindowEvent::RedrawRequested => {
+                browser::handle::render(handle);
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.browser_cursor = position;
+                let x = position.x as f32 / self.browser_scale;
+                let y = position.y as f32 / self.browser_scale;
+                browser::handle::push_mouse_move(handle, x, y);
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                let pressed = state == ElementState::Pressed;
+                browser::handle::push_mouse_button(handle, Self::winit_button(button), pressed);
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let (dx, dy) = match delta {
+                    MouseScrollDelta::LineDelta(dx, dy) => (dx * 20.0, dy * 20.0),
+                    MouseScrollDelta::PixelDelta(d) => (d.x as f32, d.y as f32),
+                };
+                browser::handle::push_scroll(handle, dx, -dy);
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                use iced_wgpu::core::keyboard;
+                use iced_wgpu::core::Event as IcedEvent;
+                let pressed = event.state == ElementState::Pressed;
+                let modifiers = decode_winit_modifiers(self.modifiers);
+                let key = winit_key_to_iced(&event.logical_key);
+                let text = event.text.as_ref().map(|s| iced_wgpu::core::SmolStr::new(s.as_str()));
+                let physical_key = keyboard::key::Physical::Unidentified(keyboard::key::NativeCode::Unidentified);
+                let location = keyboard::Location::Standard;
+                let modified_key = key.clone();
+                let ev = if pressed {
+                    keyboard::Event::KeyPressed {
+                        key, modified_key, physical_key, location, modifiers, text,
+                        repeat: event.repeat,
+                    }
+                } else {
+                    keyboard::Event::KeyReleased {
+                        key, modified_key, physical_key, location, modifiers,
+                    }
+                };
+                browser::handle::push_event(handle, IcedEvent::Keyboard(ev));
+            }
+            WindowEvent::ModifiersChanged(mods) => {
+                self.modifiers = mods.state();
+                use iced_wgpu::core::keyboard;
+                use iced_wgpu::core::Event as IcedEvent;
+                browser::handle::push_event(
+                    handle,
+                    IcedEvent::Keyboard(keyboard::Event::ModifiersChanged(decode_winit_modifiers(mods.state()))),
+                );
+            }
+            _ => {}
         }
     }
 
@@ -232,7 +390,13 @@ impl ApplicationHandler for App {
         self.window = Some(window);
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        let is_browser = self.browser_window.as_ref().map(|w| w.id() == id).unwrap_or(false);
+        if is_browser {
+            self.handle_browser_event(event);
+            return;
+        }
+
         if self.handle.is_null() { return; }
 
         match event {
@@ -340,10 +504,14 @@ impl ApplicationHandler for App {
             self.last_autosave_attempt = Instant::now();
             self.try_autosave();
         }
+        self.drain_browser_open();
         if let Some(w) = &self.window {
             if !self.handle.is_null() {
                 w.request_redraw();
             }
+        }
+        if let Some(w) = &self.browser_window {
+            w.request_redraw();
         }
     }
 }
@@ -353,6 +521,34 @@ fn text_hash(s: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     s.hash(&mut h);
     h.finish()
+}
+
+/// Translates winit logical keys into iced keyboard keys for direct iced
+/// event push (used by the second browser window, which speaks iced
+/// directly rather than through the C bridge).
+fn winit_key_to_iced(key: &Key) -> iced_wgpu::core::keyboard::Key {
+    use iced_wgpu::core::keyboard::{key as ikey, Key as IKey};
+    match key {
+        Key::Named(n) => match n {
+            NamedKey::Enter => IKey::Named(ikey::Named::Enter),
+            NamedKey::Tab => IKey::Named(ikey::Named::Tab),
+            NamedKey::Backspace => IKey::Named(ikey::Named::Backspace),
+            NamedKey::Escape => IKey::Named(ikey::Named::Escape),
+            NamedKey::Delete => IKey::Named(ikey::Named::Delete),
+            NamedKey::ArrowLeft => IKey::Named(ikey::Named::ArrowLeft),
+            NamedKey::ArrowRight => IKey::Named(ikey::Named::ArrowRight),
+            NamedKey::ArrowUp => IKey::Named(ikey::Named::ArrowUp),
+            NamedKey::ArrowDown => IKey::Named(ikey::Named::ArrowDown),
+            NamedKey::Home => IKey::Named(ikey::Named::Home),
+            NamedKey::End => IKey::Named(ikey::Named::End),
+            NamedKey::PageUp => IKey::Named(ikey::Named::PageUp),
+            NamedKey::PageDown => IKey::Named(ikey::Named::PageDown),
+            NamedKey::Space => IKey::Named(ikey::Named::Space),
+            _ => IKey::Unidentified,
+        },
+        Key::Character(s) => IKey::Character(iced_wgpu::core::SmolStr::new(s.as_str())),
+        _ => IKey::Unidentified,
+    }
 }
 
 /// Maps winit logical keys to the macOS-style virtual keycodes the bridge

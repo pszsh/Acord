@@ -24,6 +24,7 @@ pub enum MenuAction {
     Find,
     Settings,
     ExportCrate,
+    ToggleBrowser,
 }
 
 /// Matches an app-level shortcut. Returns Some(action) for combos that should
@@ -31,6 +32,16 @@ pub enum MenuAction {
 /// viewport (cut/copy/paste/undo/redo/select-all are handled inside iced via
 /// the Ctrl→LOGO modifier alias, plain typing, navigation, etc.).
 pub fn match_shortcut(modifiers: ModifiersState, key: &Key) -> Option<MenuAction> {
+    // Alt+B mirrors macOS Ctrl+B for the document browser. Mac-Cmd maps to
+    // Ctrl on Linux/Windows, so Mac-Ctrl gets bumped to Alt to avoid collision.
+    if modifiers.alt_key() && !modifiers.control_key() && !modifiers.super_key() {
+        if let Key::Character(s) = key {
+            if ascii_lower(s) == 'b' {
+                return Some(MenuAction::ToggleBrowser);
+            }
+        }
+    }
+
     if !modifiers.control_key() {
         return None;
     }

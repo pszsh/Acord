@@ -19,10 +19,6 @@ impl Value {
             Value::Bool(b) => b.to_string(),
             Value::Str(s) => s.clone(),
             Value::Array(items) => {
-                // Spice-shape detection: exactly [Number, Str] → render in
-                // SPICE notation. Any other 2-array (numbers, strings, etc.
-                // that happen to have two elements) falls through to the
-                // generic array display.
                 if items.len() == 2 {
                     if let (Value::Number(n), Value::Str(u)) = (&items[0], &items[1]) {
                         return format_spice(*n, u);
@@ -66,9 +62,7 @@ fn format_number(n: f64) -> String {
     }
 }
 
-/// Render a spice-typed value (scalar + unit label) in SPICE notation.
-/// Picks the closest SI prefix from {none, m, u, n, p} so the mantissa
-/// lands in [1, 1000), formats to 3 sig figs, uppercases the unit.
+/// renders a scalar+unit value in SPICE notation.
 fn format_spice(n: f64, unit: &str) -> String {
     if n == 0.0 {
         return format!("0{}", unit);
@@ -91,27 +85,18 @@ fn format_spice(n: f64, unit: &str) -> String {
     let mantissa = n / scale;
     let mag = mantissa.abs().log10().floor() as i32;
     let decimals = (2 - mag).max(0) as usize;
-    // 3 sig figs, but trailing zeros after the decimal are cosmetic —
-    // trim them so `10` doesn't display as `10.0`, matching the house
-    // number formatter.
     let raw = format!("{:.*}", decimals, mantissa);
     let trimmed: &str = if raw.contains('.') {
         raw.trim_end_matches('0').trim_end_matches('.')
     } else {
         raw.as_str()
     };
-    // Simple units (F, H, HZ) sit flush (`100NF`). Compound labels from the
-    // unit algebra (`F/H`, `1/F`, `F·H`, `F²`) get a separating space so
-    // `707M F/H` doesn't read as `707MF/H` — the `/` or `·` would merge
-    // into the prefix letter otherwise.
     let compound = unit.chars().any(|c| !c.is_ascii_alphabetic());
     let sep = if compound && !unit.is_empty() { " " } else { "" };
     format!("{}{}{}{}", trimmed, prefix, sep, unit)
 }
 
-/// Peel a spice-shaped value down to (scalar, unit). Anything that isn't
-/// `Array([Number, Str])` returns (value, None) — unit is only added to
-/// the result when at least one operand was spice.
+/// peels a spice-shaped value down to (scalar, unit).
 fn unwrap_spice(v: &Value) -> (Value, Option<String>) {
     if let Value::Array(a) = v {
         if a.len() == 2 {
@@ -123,24 +108,13 @@ fn unwrap_spice(v: &Value) -> (Value, Option<String>) {
     (v.clone(), None)
 }
 
-/// Re-wrap a numeric result with a unit carried from an operand. Non-number
-/// results (Bool from comparison, Str from concatenation) drop the unit —
-/// they're no longer a measurable quantity.
+/// re-wraps a numeric result with a carried unit, or drops the tag for non-numbers.
 fn retag_spice(v: Value, unit: Option<String>) -> Value {
     match (&v, unit) {
         (Value::Number(_), Some(u)) => Value::Array(vec![v, Value::Str(u)]),
         _ => v,
     }
 }
-
-/// Combine two unit labels under an operation. Returns `None` when the
-/// result shouldn't carry a label — either because addition of distinct
-/// labels can't be meaningfully preserved, or because division cancels
-/// matching labels to dimensionless. `Some(String::new())` never occurs:
-/// an empty label means "drop the spice tag", so we use None for that.
-///
-/// All four helpers are pure label algebra. No dimensional analysis, no
-/// SI knowledge — just literal rewriting.
 
 fn combine_unit_mul(a: &str, b: &str) -> Option<String> {
     match (a.is_empty(), b.is_empty()) {
@@ -153,7 +127,6 @@ fn combine_unit_mul(a: &str, b: &str) -> Option<String> {
 }
 
 fn combine_unit_div(a: &str, b: &str) -> Option<String> {
-    // Same label on both sides → cancellation → plain number.
     if a == b { return None; }
     if b.is_empty() {
         return if a.is_empty() { None } else { Some(a.to_string()) };
@@ -175,11 +148,6 @@ fn combine_unit_pow(a: &str, exp: f64) -> Option<String> {
 }
 
 fn combine_unit_additive(a: &str, b: &str) -> Option<String> {
-    // Additive ops need compatible labels to keep the tag. Matching labels
-    // pass through; one-sided labels absorb the untagged operand (an H
-    // plus a bare number is still H). Distinct non-empty labels strip —
-    // `F + H` has no clean algebraic answer, so return a plain number
-    // rather than pretend the sum is meaningful in either unit.
     if a == b {
         if a.is_empty() { None } else { Some(a.to_string()) }
     } else if a.is_empty() {
@@ -191,10 +159,7 @@ fn combine_unit_additive(a: &str, b: &str) -> Option<String> {
     }
 }
 
-/// Parse `"A1"`, `"AA12"`, etc. into 0-based `(col, row)`. Case-insensitive.
-/// Letters must precede digits; both must be non-empty. Returns None for
-/// anything else (e.g. `"x1"` when x isn't a plain letter sequence, `"1A"`,
-/// `"A0"`).
+/// parses a cell address like `A1` into 0-based `(col, row)`.
 pub fn parse_cell_address(s: &str) -> Option<(u32, u32)> {
     let s = s.trim();
     if s.is_empty() {
@@ -237,7 +202,7 @@ fn col_letters_to_index(s: &str) -> Option<u32> {
     Some(result - 1)
 }
 
-/// Render a 0-based (col, row) back to spreadsheet notation for error messages.
+/// renders a 0-based (col, row) as a spreadsheet-style address.
 pub fn display_addr(col: u32, row: u32) -> String {
     let mut letters = String::new();
     let mut c = col as i64;
@@ -252,8 +217,7 @@ pub fn display_addr(col: u32, row: u32) -> String {
     format!("{}{}", letters, row + 1)
 }
 
-/// Interpret a cell's raw string. Number-parseable strings promote to
-/// `Value::Number`; empty stays as empty string; anything else is Str.
+/// coerces a raw cell string into a Value.
 fn coerce_cell_value(s: &str) -> Value {
     let trimmed = s.trim();
     if trimmed.is_empty() {
@@ -278,9 +242,6 @@ fn rows_to_value(rows: &[Vec<String>]) -> Value {
 #[derive(Debug, Clone, PartialEq)]
 enum Token {
     Number(f64),
-    /// Spice-notation literal. Value is already scaled by the prefix
-    /// (e.g. `100nF` → (1e-7, "F")). Empty unit is valid — `100n` is
-    /// (1e-7, ""). Only emitted when spice mode is active.
     Spice(f64, String),
     Str(String),
     Bool(bool),
@@ -328,10 +289,7 @@ enum Token {
     Eof,
 }
 
-/// Pre-scan the source for `use spice` / `use spice::…`. Activates spice
-/// notation for the whole tokenize pass — gating postfix parsing on runtime
-/// module state would require threading `use` through the tokenizer, which
-/// is out of proportion for a documentary import.
+/// returns true if the source declares `use spice` or a `use spice::…` import.
 fn source_enables_spice(src: &str) -> bool {
     src.lines().any(|l| {
         let t = l.trim();
@@ -344,13 +302,8 @@ fn source_enables_spice(src: &str) -> bool {
     })
 }
 
-/// Known SPICE unit strings, stored uppercase. Matched case-insensitively
-/// against the alpha run after a number. `"OHM"` is the long form; `"R"`
-/// is the short ASCII alias some users prefer.
 const SPICE_UNITS: &[&str] = &["F", "H", "HZ", "V", "A", "W", "R", "OHM", "S", "J"];
 
-/// Scaling factor for a one-char SPICE prefix (lowercase). Returns None for
-/// anything else. Accepts `µ` (both U+00B5 micro sign and U+03BC Greek mu).
 fn spice_prefix_scale(c: char) -> Option<f64> {
     match c {
         'm' | 'M' => Some(1e-3),
@@ -361,12 +314,7 @@ fn spice_prefix_scale(c: char) -> Option<f64> {
     }
 }
 
-/// Parse a post-number alpha run as a SPICE suffix. Returns
-/// `(scale, unit_uppercase)`. The run must match exactly one of:
-///   - lone prefix (`m`, `u`, `µ`, `n`, `p`)
-///   - lone unit (`F`, `H`, `Hz`, …)
-///   - prefix + unit (`mF`, `uH`, `nF`, …)
-/// A miss returns None so the caller can fall back to implicit-mul.
+/// parses a post-number alpha run as `(scale, unit_uppercase)`.
 fn parse_spice_suffix(alpha: &str) -> Option<(f64, String)> {
     if alpha.is_empty() {
         return None;
@@ -376,18 +324,15 @@ fn parse_spice_suffix(alpha: &str) -> Option<(f64, String)> {
         c => c.to_ascii_uppercase(),
     }).collect();
 
-    // lone prefix
     if normalized.len() == 1 {
         let first = alpha.chars().next().unwrap();
         if let Some(scale) = spice_prefix_scale(first) {
             return Some((scale, String::new()));
         }
     }
-    // lone unit
     if SPICE_UNITS.iter().any(|u| *u == normalized) {
         return Some((1.0, normalized));
     }
-    // prefix + unit
     let first = alpha.chars().next().unwrap();
     if let Some(scale) = spice_prefix_scale(first) {
         let rest: String = normalized.chars().skip(1).collect();
@@ -398,10 +343,7 @@ fn parse_spice_suffix(alpha: &str) -> Option<(f64, String)> {
     None
 }
 
-/// After a number's digits are consumed up through position `i`, consume
-/// an optional scientific exponent (`e[+-]?DIGITS`). Returns the final
-/// multiplier and advances `i`. A malformed exponent (`e` with no digits)
-/// is left untouched.
+/// consumes an optional `e[+-]?DIGITS` and returns the multiplier.
 fn try_consume_exponent(chars: &[char], i: &mut usize) -> f64 {
     let len = chars.len();
     if *i >= len { return 1.0; }
@@ -416,9 +358,7 @@ fn try_consume_exponent(chars: &[char], i: &mut usize) -> f64 {
     10f64.powi(exp)
 }
 
-/// Attach exponent / spice-suffix / implicit-mul tail to a freshly-parsed
-/// number. Pushes either `Number` or `Spice`, and may follow it with a
-/// `Star` when the next char is ident-like or `(`.
+/// pushes a Number or Spice token plus any implicit-multiplication `Star`.
 fn finalize_number(
     tokens: &mut Vec<Token>,
     mut value: f64,
@@ -429,7 +369,6 @@ fn finalize_number(
     value *= try_consume_exponent(chars, i);
     let len = chars.len();
 
-    // Greedy alpha run (including µ) — consumed as a whole or not at all.
     let run_start = *i;
     let mut run_end = run_start;
     while run_end < len && (chars[run_end].is_alphabetic() || chars[run_end] == 'µ' || chars[run_end] == 'μ') {
@@ -445,8 +384,6 @@ fn finalize_number(
         }
     }
     tokens.push(Token::Number(value));
-    // Implicit multiplication: Number directly adjacent to an ident-start
-    // char or `(`. Whitespace between kills the rule (skipped separately).
     if *i < len {
         let c = chars[*i];
         if c.is_alphabetic() || c == '_' || c == '(' || c == 'µ' || c == 'μ' {
@@ -468,15 +405,11 @@ fn tokenize(input: &str, spice: bool) -> Result<Vec<Token>, String> {
             '\n' => { tokens.push(Token::Newline); i += 1; }
             '+' => { tokens.push(Token::Plus); i += 1; }
             '-' => {
-                // `->` is the function-return-type separator; takes precedence
-                // over negative-number detection since `-` adjacent to `>` is
-                // never a numeric sign.
                 if i + 1 < len && chars[i + 1] == '>' {
                     tokens.push(Token::Arrow);
                     i += 2;
                     continue;
                 }
-                // negative number literal: only if preceded by operator/open/start/newline
                 if i + 1 < len && (chars[i + 1].is_ascii_digit() || chars[i + 1] == '.') {
                     let can_be_neg = if tokens.is_empty() {
                         true
@@ -601,7 +534,7 @@ fn tokenize(input: &str, spice: bool) -> Result<Vec<Token>, String> {
                 if i >= len {
                     return Err("unterminated string".into());
                 }
-                i += 1; // closing quote
+                i += 1;
                 tokens.push(Token::Str(s));
             }
             _ if c.is_ascii_digit() || (c == '.' && i + 1 < len && chars[i + 1].is_ascii_digit()) => {
@@ -630,9 +563,6 @@ fn tokenize(input: &str, spice: bool) -> Result<Vec<Token>, String> {
                     "return" => tokens.push(Token::Return),
                     "true" => tokens.push(Token::Bool(true)),
                     "false" => tokens.push(Token::Bool(false)),
-                    // Keyword forms of the logical operators. Coexist with
-                    // `&&` / `||` / `!` and emit the same tokens, so the
-                    // parser doesn't need to learn anything new.
                     "and" => tokens.push(Token::And),
                     "or" => tokens.push(Token::Or),
                     "not" => tokens.push(Token::Bang),
@@ -657,9 +587,6 @@ enum Op {
     Add, Sub, Mul, Div, Mod, Pow,
     Eq, Neq, Lt, Gt, Lte, Gte,
     And, Or, Not, Neg,
-    /// `~expr` — strip the type from a value, demoting Bool to its numeric
-    /// representation (false→0, true→1) so structurally-similar values can
-    /// be compared across declared types.
     Strip,
 }
 
@@ -670,10 +597,6 @@ enum Stmt {
     While(Expr, Vec<Stmt>),
     IfElse(Expr, Vec<Stmt>, Option<Vec<Stmt>>),
     ForLoop(String, Expr, Vec<Stmt>),
-    /// `fn name(p [: T], …) [-> R] { body }`. Each param optionally carries
-    /// a type annotation (value type like `int` or a unit label like `F`);
-    /// `return_type` similarly may be a value type or a unit label that
-    /// overrides whatever unit the body's last expression produced.
     FnDef {
         name: String,
         params: Vec<(String, Option<String>)>,
@@ -681,22 +604,13 @@ enum Stmt {
         body: Vec<Stmt>,
     },
     Return(Expr),
-    /// `use module_name` or `use module_name::item`.
-    /// (module, optional specific item)
     Use(String, Option<String>),
-    /// `@[block::]table:A1 = expr` — write a cell in a live table. Only
-    /// valid at text-block scope; cell formulas are expressions and never
-    /// produce this variant.
     CellAssign {
         block: Option<String>,
         table: String,
         cell: (u32, u32),
         value: Expr,
     },
-    /// Math-form function inversion:
-    /// `let NAME(params…) = target_var where source_fn(args…) = result_var`.
-    /// Both params and source_args are bare identifiers; result_var must
-    /// equal params[0]; target_var must be in the source fn's param list.
     SolveDef {
         name: String,
         params: Vec<String>,
@@ -708,14 +622,10 @@ enum Stmt {
     ExprStmt(Expr),
 }
 
-/// Target shape of a cell reference. Cell indices are 0-based (`A1` = (0,0)).
 #[derive(Debug, Clone, PartialEq)]
 pub enum CellRefTarget {
-    /// `@Table` — the whole table, coerces to Array<Array<Value>>.
     Whole,
-    /// `@Table:A1` — a single cell (col, row).
     Cell(u32, u32),
-    /// `@Table:A1:B4` or `@Table[A1:B4]` — rectangular range (col0, row0, col1, row1).
     Range(u32, u32, u32, u32),
 }
 
@@ -731,22 +641,12 @@ enum Expr {
     Array(Vec<Expr>),
     Index(Box<Expr>, Box<Expr>),
     Range(Box<Expr>, Box<Expr>),
-    /// `expr is type_name`. Right side is a type identifier (literal token),
-    /// not a regular sub-expression — kept as a string for the evaluator to
-    /// match against the value's runtime kind.
     IsCheck(Box<Expr>, String),
-    /// `@[block::]table[:cell[:cell] | [cell:cell]]` or bare `A1`/`A1:B4`
-    /// inside a cell formula (both names None → resolved against
-    /// `Interpreter::current_table`).
     CellRef {
         block: Option<String>,
         table: Option<String>,
         target: CellRefTarget,
     },
-    /// `solve!(target_var, source_fn)` / `solve!(target_var from source_fn)`.
-    /// Only valid as the RHS of a `let`; `exec_stmt` intercepts this shape
-    /// and registers a `SolvedFnDef`. Evaluating it in any other position
-    /// is an error — there's no runtime value for the macro itself.
     SolveMacro {
         var: String,
         source_fn: String,
@@ -850,7 +750,6 @@ impl Parser {
             Token::Ident(_) => {
                 let saved = self.pos;
                 if let Token::Ident(name) = self.advance() {
-                    // name(params) = expr  (legacy cord-expr function syntax)
                     if self.peek() == &Token::LParen {
                         let paren_saved = self.pos;
                         self.advance();
@@ -890,7 +789,6 @@ impl Parser {
                             }
                         }
                         self.pos = paren_saved;
-                        // fall through: not a function def, might be assignment
                     }
                     if self.peek() == &Token::Eq {
                         self.advance();
@@ -918,9 +816,6 @@ impl Parser {
             Token::Ident(n) => n,
             t => return Err(format!("expected identifier after 'let', got {:?}", t)),
         };
-        // `let NAME(params) = …` — function definition. Body is either a
-        // single expression (legacy `f(x) = expr` form, lifted under `let`)
-        // or an inversion clause `target where source(args) = result`.
         if self.peek() == &Token::LParen {
             return self.parse_let_with_params(name);
         }
@@ -939,8 +834,6 @@ impl Parser {
         Ok(Stmt::Let(name, type_ann, expr))
     }
 
-    /// `let NAME ( PARAMS ) = …` — function def with optional `where` clause.
-    /// Called after the NAME has been consumed; `(` is the next token.
     fn parse_let_with_params(&mut self, name: String) -> Result<Stmt, String> {
         self.expect(&Token::LParen)?;
         let mut params = Vec::new();
@@ -961,16 +854,13 @@ impl Parser {
         self.expect(&Token::Eq)?;
         let rhs = self.parse_expr()?;
 
-        // Math-form inversion: RHS is a bare ident followed by `where`.
-        // `where` isn't a reserved keyword at the token layer, so it arrives
-        // as `Ident("where")` — check textually.
         let is_where = matches!(self.peek(), Token::Ident(w) if w == "where");
         if is_where {
             let target_var = match rhs {
                 Expr::Ident(s) => s,
                 _ => return Err("expected a single target variable before 'where'".into()),
             };
-            self.advance(); // consume `where`
+            self.advance();
             let source_fn = match self.advance() {
                 Token::Ident(n) => n,
                 t => return Err(format!("expected source function name after 'where', got {:?}", t)),
@@ -1007,9 +897,6 @@ impl Parser {
             });
         }
 
-        // Plain function def: `let f(x) = expr` ≡ bare `f(x) = expr`.
-        // No type annotations at this entry point — params come in as
-        // bare idents from parse_let_with_params.
         self.skip_newlines();
         let typed_params: Vec<(String, Option<String>)> =
             params.into_iter().map(|p| (p, None)).collect();
@@ -1090,7 +977,6 @@ impl Parser {
         Ok(Stmt::Return(expr))
     }
 
-    /// `use module_name` or `use module_name::item`
     fn parse_use(&mut self) -> Result<Stmt, String> {
         self.expect(&Token::Use)?;
         let module = match self.advance() {
@@ -1098,7 +984,7 @@ impl Parser {
             other => return Err(format!("expected module name after 'use', got {:?}", other)),
         };
         let item = if self.peek() == &Token::ColonColon {
-            self.advance(); // consume ::
+            self.advance();
             match self.advance() {
                 Token::Ident(name) => Some(name),
                 Token::Star => Some("*".to_string()),
@@ -1111,9 +997,6 @@ impl Parser {
         Ok(Stmt::Use(module, item))
     }
 
-    /// Parse `@[block::]table[:cell[:cell] | [cell:cell]]`. Assumes the
-    /// leading `@` is the next token. Names are lowercased for
-    /// case-insensitive lookup.
     fn parse_cell_ref(&mut self) -> Result<Expr, String> {
         self.expect(&Token::At)?;
         let first = match self.advance() {
@@ -1156,12 +1039,7 @@ impl Parser {
         Ok(Expr::CellRef { block, table, target })
     }
 
-    /// `solve ! ( IDENT [,|from] IDENT )`. Caller has verified the first
-    /// three tokens match `solve!(` — this just consumes and validates the
-    /// interior. Either `,` or the bare word `from` separates the target
-    /// variable from the source function name.
     fn parse_solve_macro(&mut self) -> Result<Expr, String> {
-        // `solve`
         match self.advance() {
             Token::Ident(n) if n == "solve" => {}
             t => return Err(format!("expected 'solve', got {:?}", t)),
@@ -1209,7 +1087,6 @@ impl Parser {
             }
         }
         self.expect(&Token::RParen)?;
-        // Optional `-> T` return-type annotation.
         let return_type = if self.peek() == &Token::Arrow {
             self.advance();
             match self.advance() {
@@ -1224,9 +1101,6 @@ impl Parser {
         Ok(Stmt::FnDef { name, params, return_type, body })
     }
 
-    /// `ident` or `ident : type` — a function parameter's name with an
-    /// optional type annotation. The type is either a value-type (`int`,
-    /// `float`, …) or a unit label (`F`, `H`, `Ω`, …).
     fn parse_typed_param(&mut self) -> Result<(String, Option<String>), String> {
         let name = match self.advance() {
             Token::Ident(p) => p,
@@ -1251,10 +1125,6 @@ impl Parser {
             let right = self.parse_or()?;
             return Ok(Expr::Range(Box::new(left), Box::new(right)));
         }
-        // `A1:B4` bare cell range — only produces a CellRef when both sides
-        // are plain idents parseable as cell addresses. Any other `:` here
-        // would be a parse error anyway (Colon has no other use in
-        // expression position), so rewinding is safe.
         if self.peek() == &Token::Colon {
             if let Expr::Ident(ref start_name) = left {
                 if let Some((c0, r0)) = parse_cell_address(start_name) {
@@ -1300,8 +1170,6 @@ impl Parser {
     fn parse_comparison(&mut self) -> Result<Expr, String> {
         let mut left = self.parse_additive()?;
         loop {
-            // `is` is a comparison-precedence keyword whose right side is a
-            // type identifier (literal name), not a sub-expression.
             if self.peek() == &Token::Is {
                 self.advance();
                 let type_name = match self.advance() {
@@ -1367,7 +1235,7 @@ impl Parser {
         let base = self.parse_unary()?;
         if self.peek() == &Token::Caret {
             self.advance();
-            let exp = self.parse_power()?; // right-associative
+            let exp = self.parse_power()?;
             Ok(Expr::BinOp(Op::Pow, Box::new(base), Box::new(exp)))
         } else {
             Ok(base)
@@ -1425,9 +1293,6 @@ impl Parser {
         match self.peek().clone() {
             Token::Number(n) => { self.advance(); Ok(Expr::Num(n)) }
             Token::Spice(n, unit) => {
-                // Lower to the 2-array the interpreter recognizes as spice:
-                // [scalar, unit]. No new AST variant — existing arithmetic
-                // handles arrays and the strip/retag helpers key off shape.
                 self.advance();
                 Ok(Expr::Array(vec![Expr::Num(n), Expr::Str(unit)]))
             }
@@ -1435,9 +1300,6 @@ impl Parser {
             Token::Bool(b) => { self.advance(); Ok(Expr::Bool(b)) }
             Token::At => self.parse_cell_ref(),
             Token::Ident(name) => {
-                // `solve!(VAR[, |from] SOURCE_FN)` — inversion macro. Detected
-                // here so any identifier followed by `!` still errors cleanly
-                // (no other macros exist yet; keep the check narrow).
                 if name == "solve"
                     && self.tokens.get(self.pos + 1) == Some(&Token::Bang)
                     && self.tokens.get(self.pos + 2) == Some(&Token::LParen)
@@ -1480,59 +1342,27 @@ pub struct FnDef {
     body: Vec<Stmt>,
 }
 
-/// Lowered form of both `solve!(var, fn)` and the `where` clause. Reached by
-/// two parse paths that converge on the same shape: pick a parameter of an
-/// existing fn, make the fn's return the new first parameter, numerically
-/// invert on call.
 #[derive(Clone, Debug)]
 pub struct SolvedFnDef {
     source_fn: String,
-    /// Index of the solved-for parameter within `source_fn`'s param list.
     solve_param_idx: usize,
-    /// Parameter names of the new (inverted) function. Slot 0 is the
-    /// target-value name (what the source fn would have returned).
     new_params: Vec<String>,
 }
 
 pub struct Interpreter {
     vars: HashMap<String, Value>,
-    /// Sticky declared types. A `let x: T = ...` records `T` here; subsequent
-    /// `x = ...` reassignments must coerce to `T` via the round-trip rule.
-    /// Re-declaring `let x` (with or without a type) replaces the entry.
     var_types: HashMap<String, String>,
     fns: HashMap<String, FnDef>,
-    /// Inverted functions built from `solve!(…)` / `let … where …`. Queried
-    /// by `eval_call` between the user-fn lookup and the builtin dispatch.
     solved_fns: HashMap<String, SolvedFnDef>,
-    /// Sticky flag set by `exec_line` when its input includes `use spice`.
-    /// Gates postfix SPICE notation in the tokenizer. Once on, stays on for
-    /// the interpreter's lifetime — modules are short-lived enough that
-    /// per-block granularity isn't worth the plumbing.
     spice_enabled: bool,
-    /// Tables registered from the viewport before eval. Keyed by fully
-    /// qualified lowercase name: a bare global name (e.g. `"budget"`), a
-    /// positional `"table_N"`, or a cross-block `"block_N::table_N"` /
-    /// `"blockname::tablename"`. The same table may be registered under
-    /// multiple keys (heading name, positional name, cross-block alias).
     tables: HashMap<String, Vec<Vec<String>>>,
-    /// Cell formulas' scope anchor. Set to `Some(lowercased_table_name)`
-    /// while a formula inside that table is being evaluated, so bare `A1`
-    /// refs resolve against the right table. None in text-block scope.
     current_table: Option<String>,
-    /// Current-block scope for resolving unqualified H4 (block-scoped)
-    /// table names. Lowercased block name. Set per-module by the eval
-    /// driver.
     current_block: Option<String>,
-    /// Log of cell writes that happened during this eval pass. Drained by
-    /// the viewport after eval to apply mutations back to live TableBlocks.
     table_writes: Vec<TableWrite>,
 }
 
 #[derive(Debug, Clone)]
 pub struct TableWrite {
-    /// Fully-resolved registry key — matches one of the strings the
-    /// viewport passed to `register_table`. The viewport's own name→id
-    /// map resolves this back to a `TableBlock`.
     pub table_key: String,
     pub cell: (u32, u32),
     pub value: String,
@@ -1556,37 +1386,27 @@ impl Interpreter {
         }
     }
 
-    /// Register a table's current cell contents under `name` (lowercased).
-    /// Overwrites any prior registration under the same key. Called before
-    /// eval by the viewport for every table in the focused block's scope.
+    /// registers a table's contents under `name` (lowercased).
     pub fn register_table(&mut self, name: &str, rows: Vec<Vec<String>>) {
         self.tables.insert(name.to_lowercase(), rows);
     }
 
-    /// Set the current-table anchor for bare cell refs in cell formulas.
-    /// Passing None restores text-block scope.
+    /// sets the table anchor for bare cell refs.
     pub fn set_current_table(&mut self, name: Option<&str>) {
         self.current_table = name.map(|s| s.to_lowercase());
     }
 
-    /// Set the current-block anchor for resolving H4 (block-scoped) table
-    /// names without an explicit `block::` prefix.
+    /// sets the block anchor for unqualified block-scoped table names.
     pub fn set_current_block(&mut self, name: Option<&str>) {
         self.current_block = name.map(|s| s.to_lowercase());
     }
 
-    /// Consume cell writes accumulated during the last eval. Viewport
-    /// applies each to the matching TableBlock after eval returns.
+    /// drains cell writes accumulated during the last eval.
     pub fn drain_table_writes(&mut self) -> Vec<TableWrite> {
         std::mem::take(&mut self.table_writes)
     }
 
-    /// Overwrite a cell's raw string in the registered table without
-    /// logging a write. Used by the viewport's cell-formula loop to
-    /// thread a formula's computed value back into the table registry
-    /// so downstream reads (from text blocks, other formulas) see the
-    /// computed result instead of the `/=...` string. `name` is an
-    /// already-registered key; no-op if the table isn't registered.
+    /// overwrites a cell's raw string in the registered table without logging a write.
     pub fn write_cell_raw(&mut self, name: &str, col: u32, row: u32, value: &str) {
         let key = name.to_lowercase();
         if let Some(rows) = self.tables.get_mut(&key) {
@@ -1598,11 +1418,7 @@ impl Interpreter {
         }
     }
 
-    /// Build the HashMap key under which a table was registered. Bare refs
-    /// (no block qualifier) first try the name directly (H3 global or
-    /// positional `table_N`), then fall back to `current_block::name` (H4
-    /// local to the caller's module). Returns None for refs that don't
-    /// resolve to any registered table.
+    /// resolves a (block, table) pair to a registered HashMap key.
     fn resolve_table_key(&self, block: Option<&str>, table: Option<&str>) -> Option<String> {
         match (block, table) {
             (Some(b), Some(t)) => {
@@ -1625,10 +1441,7 @@ impl Interpreter {
         }
     }
 
-    /// Same as `resolve_table_key` but returns the key even when the table
-    /// isn't registered — used by the write path so a `@Table:A1 = ...`
-    /// still logs a write in a predictable location (the canonical bare
-    /// form) even if the viewport hadn't registered it yet.
+    /// resolves a (block, table) pair, returning a synthesized key when unregistered.
     fn resolve_table_key_lenient(&self, block: Option<&str>, table: Option<&str>) -> Option<String> {
         match (block, table) {
             (Some(b), Some(t)) => Some(format!("{}::{}", b.to_lowercase(), t.to_lowercase())),
@@ -1688,8 +1501,6 @@ impl Interpreter {
         if trimmed.is_empty() {
             return Ok(None);
         }
-        // Pre-scan for `use spice` so the tokenizer sees spice mode even
-        // when the import is later in the block than the first literal.
         if !self.spice_enabled && source_enables_spice(trimmed) {
             self.spice_enabled = true;
         }
@@ -1706,9 +1517,7 @@ impl Interpreter {
         }
     }
 
-    /// Evaluate a pre-parsed cell formula. Caller is responsible for having
-    /// called `set_current_table(Some(owning_table))` first, so bare
-    /// `A1`-style refs resolve to the right table.
+    /// evaluates a pre-parsed cell formula.
     pub fn eval_formula(&mut self, f: &ParsedFormula) -> Result<Value, String> {
         self.eval_expr(&f.ast, 0)
     }
@@ -1724,24 +1533,16 @@ impl Interpreter {
         self.eval_expr(&e, 0)
     }
 
-    /// Explicitly enable SPICE notation. Used by the viewport when a
-    /// sibling block has `use spice` — the formula parser doesn't run
-    /// through `exec_line`, so the caller has to flip the flag itself.
     pub fn set_spice_enabled(&mut self, on: bool) {
         self.spice_enabled = on;
     }
 
-    /// Query whether SPICE notation is currently active.
     pub fn spice_enabled(&self) -> bool {
         self.spice_enabled
     }
 
     fn exec_stmt(&mut self, stmt: &Stmt, depth: u32) -> Result<Value, String> {
         match stmt {
-            // `let name = solve!(var, source_fn)` — short-circuit before the
-            // generic Let path so the macro never has to produce a runtime
-            // Value. Every other Expr reaches `eval_expr`; SolveMacro is the
-            // one shape that only makes sense as a binding target.
             Stmt::Let(name, _type_ann, Expr::SolveMacro { var, source_fn }) => {
                 let def = self.build_solved_fn_def(source_fn, var, None)?;
                 self.fns.remove(name);
@@ -1751,11 +1552,6 @@ impl Interpreter {
                 Ok(Value::Void)
             }
             Stmt::SolveDef { name, params, target_var, source_fn, source_args, result_var } => {
-                // Math-form validation: result_var must be slot 0 of the new
-                // fn's params, and the remaining source_args must align with
-                // the source fn's params modulo target_var. We check the
-                // params-shape here and delegate the target-in-source check
-                // to `build_solved_fn_def`.
                 if params.first().map(|s| s.as_str()) != Some(result_var.as_str()) {
                     return Err(format!(
                         "inversion: result variable '{}' must be the first parameter of '{}'",
@@ -1787,9 +1583,6 @@ impl Interpreter {
                         ));
                     }
                 };
-                // `let` always overwrites any prior type stickiness — this is
-                // the only path that can change a binding's type. Untyped
-                // `let x = ...` removes a previously sticky type as well.
                 if let Some(t) = type_ann {
                     self.var_types.insert(name.clone(), t.clone());
                 } else {
@@ -1800,11 +1593,6 @@ impl Interpreter {
             }
             Stmt::Assign(name, expr) => {
                 let val = self.eval_expr(expr, depth)?;
-                // Reassignment respects the binding's sticky annotation.
-                // Value-types enforce lossy-round-trip; unit-types rewrap
-                // the new value with the declared label (overriding whatever
-                // unit the RHS algebra produced). On failure the previous
-                // binding is preserved and the error says so explicitly.
                 if let Some(t) = self.var_types.get(name).cloned() {
                     match apply_type_annotation(&val, Some(&t)) {
                         Ok(v) => {
@@ -1886,8 +1674,6 @@ impl Interpreter {
                 Err(format!("\x00return:{}", encode_return(&val)))
             }
             Stmt::Use(_, _) => {
-                // No-op at exec time. Use declarations are resolved
-                // externally by the module evaluation pipeline.
                 Ok(Value::Void)
             }
             Stmt::CellAssign { block, table, cell, value } => {
@@ -1921,17 +1707,12 @@ impl Interpreter {
             Expr::Str(s) => Ok(Value::Str(s.clone())),
             Expr::Bool(b) => Ok(Value::Bool(*b)),
             Expr::Ident(name) => {
-                // Local bindings shadow built-ins (standard scope rule), so a
-                // user `let pi = 3` would still hide the constant. Built-ins
-                // are the fallback when no binding exists.
                 if let Some(v) = self.vars.get(name) {
                     return Ok(v.clone());
                 }
                 if let Some(v) = builtin_constant(name) {
                     return Ok(v);
                 }
-                // Cell-formula context fallback: inside a cell, bare `A1`
-                // resolves to the current table's (col, row).
                 if self.current_table.is_some() {
                     if let Some((col, row)) = parse_cell_address(name) {
                         return self.read_cell(None, None, col, row);
@@ -1974,10 +1755,6 @@ impl Interpreter {
                 }
             }
             Expr::UnaryOp(Op::Strip, inner) => {
-                // `~expr` demotes a typed value to its raw form for loose
-                // structural comparison: bool→number (false=0, true=1),
-                // a spice-shaped [Number, Str] array → its scalar, other
-                // arrays pass through untouched.
                 let v = self.eval_expr(inner, depth)?;
                 Ok(match v {
                     Value::Bool(b) => Value::Number(if b { 1.0 } else { 0.0 }),
@@ -2037,7 +1814,6 @@ impl Interpreter {
     }
 
     fn eval_binop(&mut self, op: &Op, lhs: &Expr, rhs: &Expr, depth: u32) -> Result<Value, String> {
-        // short-circuit for logical ops
         if matches!(op, Op::And) {
             let l = self.eval_expr(lhs, depth)?;
             if !l.truthy() { return Ok(Value::Bool(false)); }
@@ -2053,17 +1829,11 @@ impl Interpreter {
 
         let l_raw = self.eval_expr(lhs, depth)?;
         let r_raw = self.eval_expr(rhs, depth)?;
-        // Peel the index-0 scalar off each spice-tagged operand; the index-1
-        // unit label is carried through algebraically below. Plain (non-
-        // spice) values return unit = None.
         let (l, l_unit) = unwrap_spice(&l_raw);
         let (r, r_unit) = unwrap_spice(&r_raw);
         let had_unit = l_unit.is_some() || r_unit.is_some();
         let la = l_unit.unwrap_or_default();
         let ra = r_unit.unwrap_or_default();
-        // Operation-specific label algebra. Non-arithmetic ops (&&, ||,
-        // comparisons, equality) drop the unit since the result isn't a
-        // measurable quantity anyway.
         let unit_after: Option<String> = if !had_unit {
             None
         } else {
@@ -2072,8 +1842,6 @@ impl Interpreter {
                 Op::Mul => combine_unit_mul(&la, &ra),
                 Op::Div => combine_unit_div(&la, &ra),
                 Op::Pow => {
-                    // The exponent is conventionally unitless (`F^2`, not
-                    // `F^(second)`), so only the base's unit propagates.
                     if let Value::Number(e) = r {
                         combine_unit_pow(&la, e)
                     } else if la.is_empty() {
@@ -2087,7 +1855,6 @@ impl Interpreter {
         };
 
         let result = match (op, &l, &r) {
-            // number arithmetic
             (Op::Add, Value::Number(a), Value::Number(b)) => Ok(Value::Number(a + b)),
             (Op::Sub, Value::Number(a), Value::Number(b)) => Ok(Value::Number(a - b)),
             (Op::Mul, Value::Number(a), Value::Number(b)) => Ok(Value::Number(a * b)),
@@ -2096,20 +1863,17 @@ impl Interpreter {
             (Op::Mod, Value::Number(a), Value::Number(b)) => Ok(Value::Number(a % b)),
             (Op::Pow, Value::Number(a), Value::Number(b)) => Ok(Value::Number(a.powf(*b))),
 
-            // string concatenation
             (Op::Add, Value::Str(a), Value::Str(b)) => Ok(Value::Str(format!("{}{}", a, b))),
             (Op::Add, Value::Str(a), Value::Number(b)) => Ok(Value::Str(format!("{}{}", a, format_number(*b)))),
             (Op::Add, Value::Number(a), Value::Str(b)) => Ok(Value::Str(format!("{}{}", format_number(*a), b))),
             (Op::Add, Value::Str(a), Value::Bool(b)) => Ok(Value::Str(format!("{}{}", a, b))),
             (Op::Add, Value::Bool(a), Value::Str(b)) => Ok(Value::Str(format!("{}{}", a, b))),
 
-            // number comparisons
             (Op::Lt, Value::Number(a), Value::Number(b)) => Ok(Value::Bool(a < b)),
             (Op::Gt, Value::Number(a), Value::Number(b)) => Ok(Value::Bool(a > b)),
             (Op::Lte, Value::Number(a), Value::Number(b)) => Ok(Value::Bool(a <= b)),
             (Op::Gte, Value::Number(a), Value::Number(b)) => Ok(Value::Bool(a >= b)),
 
-            // equality
             (Op::Eq, Value::Number(a), Value::Number(b)) => Ok(Value::Bool(a == b)),
             (Op::Eq, Value::Str(a), Value::Str(b)) => Ok(Value::Bool(a == b)),
             (Op::Eq, Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(a == b)),
@@ -2130,10 +1894,6 @@ impl Interpreter {
             return Err("maximum call depth exceeded".into());
         }
 
-        // User-defined functions win over built-ins — same shadow rule as
-        // variables shadowing builtin constants (`let pi = 3` overrides
-        // the `pi` constant). A note can define `fn max(a, b) { ... }`
-        // without being blocked by the aggregate `max` builtin below.
         if self.fns.contains_key(name) {
             return self.call_user_fn(name, args, depth);
         }
@@ -2141,10 +1901,6 @@ impl Interpreter {
             return self.call_solved_fn(name, args, depth);
         }
 
-        // Math builtins are unit-transparent: unwrap the index-0 scalar,
-        // compute, retag with the SAME unit label. Unit is notation, not
-        // physics — sqrt(F) stays F, sin(V) stays V, log(A) stays A. The
-        // user has `~` if they need a scalar.
         match name {
             "sin" | "cos" | "tan" | "asin" | "acos" | "atan" |
             "sqrt" | "abs" | "ln" | "log" => {
@@ -2202,11 +1958,6 @@ impl Interpreter {
                 };
                 return Ok(retag_spice(Value::Number(result), unit));
             }
-            // Aggregates over a flattened numeric view of the argument.
-            // Accept anything — cell ranges arrive as 2D arrays, literal
-            // arrays as 1D, a bare number as a length-1 sequence. Non-
-            // numeric cells (strings, bools, voids) are skipped so mixed
-            // tables Just Work.
             "sum" | "avg" | "min" | "max" | "count" | "std_devp" | "std_devs" => {
                 if args.len() != 1 {
                     return Err(format!("{}() expects 1 argument", name));
@@ -2274,15 +2025,8 @@ impl Interpreter {
             arg_vals.push(self.eval_expr(arg, depth)?);
         }
 
-        // save current scope (vars + sticky types), set up function scope.
-        // Function-local `let x: T = ...` must NOT leak its type stickiness
-        // back to the caller's `x`, so we restore var_types alongside vars.
         let saved_vars = self.vars.clone();
         let saved_types = self.var_types.clone();
-        // Bind each arg to its param name. If the param carries a type
-        // annotation, apply it first — value-types coerce, unit-labels
-        // rewrap the arg as spice with the declared label. Also stash the
-        // type in var_types so reassignments in the body respect it.
         for ((pname, pty), val) in fdef.params.iter().zip(arg_vals) {
             let bound = match pty {
                 Some(t) => apply_type_annotation(&val, Some(t))
@@ -2320,12 +2064,6 @@ impl Interpreter {
         apply_fn_return_type(&fdef.return_type, result, name)
     }
 
-    /// Validate the pieces of an inversion (from either the macro or the math
-    /// form) and assemble the lowered `SolvedFnDef`. For the macro form,
-    /// `math_form` is None and `new_params` is derived from the source fn.
-    /// For the math form, `math_form = Some((new_params, source_args))` and
-    /// we cross-check that source_args line up with the source fn's params,
-    /// and that new_params[1..] matches source_args minus the target.
     fn build_solved_fn_def(
         &self,
         source_fn: &str,
@@ -2392,9 +2130,6 @@ impl Interpreter {
         })
     }
 
-    /// Dispatch a call to an inverted function. Arg 0 is the target value
-    /// (what the source fn would have returned); args 1..n are passed
-    /// through as the source fn's non-solved parameters.
     fn call_solved_fn(&mut self, name: &str, args: &[Expr], depth: u32) -> Result<Value, String> {
         let def = self.solved_fns.get(name).cloned()
             .ok_or_else(|| format!("undefined function '{}'", name))?;
@@ -2408,8 +2143,6 @@ impl Interpreter {
         for a in args {
             arg_vals.push(self.eval_expr(a, depth)?);
         }
-        // Peel spice wrappers off both the target and the fixed args. The
-        // solver only cares about the scalar; units are a display concern.
         let (target_val, _) = unwrap_spice(&arg_vals[0]);
         let target = match target_val {
             Value::Number(n) => n,
@@ -2434,11 +2167,7 @@ impl Interpreter {
         Ok(Value::Number(result))
     }
 
-    /// Damped Newton's method with a secant-approximated derivative. The
-    /// damping (step halving when a probe yields NaN/Inf/error) keeps Newton
-    /// from shooting out of a domain boundary — e.g. a target requiring
-    /// sqrt(negative) because the initial guess was on the wrong side of
-    /// the well.
+    /// runs damped Newton's method with a secant-approximated derivative.
     fn numerical_solve(
         &mut self,
         def: &SolvedFnDef,
@@ -2462,8 +2191,6 @@ impl Interpreter {
                     ));
                 }
                 Err(e) => {
-                    // Preserve the source fn's error — it usually says
-                    // exactly what's wrong (wrong arity, bad unit, etc.).
                     return Err(format!(
                         "solve: '{}' at iteration {}: {}",
                         def.source_fn, iter, e
@@ -2473,14 +2200,10 @@ impl Interpreter {
             if fx.abs() < EPSILON {
                 return Ok(x);
             }
-            // Secant-probe for the derivative. Step size scales with x so
-            // the probe stays meaningful across orders of magnitude.
             let h = (x.abs() * 1e-6).max(1e-9);
             let fx_h = self.probe_finite(def, x + h, fixed, depth)
                 .or_else(|_| self.probe_finite(def, x - h, fixed, depth).map(|v| {
-                    // If forward probe failed but backward works, flip the
-                    // sign so the derivative still makes sense.
-                    2.0 * fx - v  // produces same slope as (v - fx) / -h via (fx - v)/h
+                    2.0 * fx - v
                 }))
                 .map_err(|_| format!(
                     "solve: could not probe derivative of '{}' near x={}",
@@ -2494,8 +2217,6 @@ impl Interpreter {
                 ));
             }
             let step = fx / dfx;
-            // Line search with step halving. Accept the first alpha where
-            // the source fn is finite at x - alpha * step.
             let mut alpha: f64 = 1.0;
             loop {
                 let candidate = x - alpha * step;
@@ -2522,9 +2243,6 @@ impl Interpreter {
         ))
     }
 
-    /// Evaluate the source fn at `x`, returning an error if the result isn't
-    /// a finite number. Separate from `eval_source_at` for use in the probe
-    /// path where we want to recover by trying a different direction.
     fn probe_finite(
         &mut self,
         def: &SolvedFnDef,
@@ -2536,10 +2254,6 @@ impl Interpreter {
         if v.is_finite() { Ok(v) } else { Err("non-finite".into()) }
     }
 
-    /// Invoke the source fn with `x` spliced into the solved-for slot.
-    /// If the source fn is annotated (typed params or a return type), its
-    /// result comes back spice-tagged — unwrap that before the solver sees
-    /// it, since Newton only cares about the scalar.
     fn eval_source_at(
         &mut self,
         def: &SolvedFnDef,
@@ -2579,9 +2293,6 @@ fn encode_return(val: &Value) -> String {
         Value::Bool(b) => format!("b:{}", b),
         Value::Str(s) => format!("s:{}", s),
         Value::Void => "v:".into(),
-        // Spice-shaped array preserves its structure through the return
-        // sentinel. Units are always uppercase ASCII so `|` is a safe
-        // separator.
         Value::Array(a) if a.len() == 2 => {
             if let (Value::Number(n), Value::Str(u)) = (&a[0], &a[1]) {
                 return format!("q:{}|{}", n, u);
@@ -2622,8 +2333,6 @@ fn type_name(v: &Value) -> &'static str {
     }
 }
 
-/// Built-in mathematical constants. Looked up after local bindings, so a
-/// user-defined `pi` shadows the built-in (standard scope rule).
 fn builtin_constant(name: &str) -> Option<Value> {
     match name {
         "pi" => Some(Value::Number(std::f64::consts::PI)),
@@ -2631,10 +2340,6 @@ fn builtin_constant(name: &str) -> Option<Value> {
     }
 }
 
-/// Runtime type-of test for the `is` keyword. Numbers match both `float`
-/// (always) and `int` (only when integer-valued and finite) — int is treated
-/// as a subset of float so a literal `1.0` is `is int` true and `is float`
-/// true. Bool, str, and array match their own kind name only.
 fn value_is_kind(v: &Value, kind: &str) -> bool {
     match (kind, v) {
         ("int", Value::Number(n)) => *n == n.trunc() && n.is_finite(),
@@ -2647,12 +2352,8 @@ fn value_is_kind(v: &Value, kind: &str) -> bool {
     }
 }
 
-/// Cast `v` into the named target type, returning `Some(converted)` if the
-/// conversion is exact for that single direction. Used as the primitive in
-/// `coerce_to`'s round-trip rule.
 fn try_cast(v: &Value, target: &str) -> Option<Value> {
     match (target, v) {
-        // Identity (already the right type).
         ("int", Value::Number(n)) if *n == n.trunc() && n.is_finite() => {
             Some(Value::Number(*n))
         }
@@ -2660,7 +2361,6 @@ fn try_cast(v: &Value, target: &str) -> Option<Value> {
         ("bool", Value::Bool(_)) => Some(v.clone()),
         ("str", Value::Str(_)) => Some(v.clone()),
 
-        // bool <-> number: 0 and 1 only.
         ("bool", Value::Number(n)) => {
             if *n == 0.0 {
                 Some(Value::Bool(false))
@@ -2673,7 +2373,6 @@ fn try_cast(v: &Value, target: &str) -> Option<Value> {
         ("int", Value::Bool(b)) => Some(Value::Number(if *b { 1.0 } else { 0.0 })),
         ("float", Value::Bool(b)) => Some(Value::Number(if *b { 1.0 } else { 0.0 })),
 
-        // bool <-> str: only the literals.
         ("str", Value::Bool(b)) => Some(Value::Str(b.to_string())),
         ("bool", Value::Str(s)) => match s.as_str() {
             "true" => Some(Value::Bool(true)),
@@ -2681,7 +2380,6 @@ fn try_cast(v: &Value, target: &str) -> Option<Value> {
             _ => None,
         },
 
-        // number <-> str: parseable, exact representation.
         ("str", Value::Number(n)) => Some(Value::Str(format_number(*n))),
         ("int", Value::Str(s)) => s
             .parse::<f64>()
@@ -2694,10 +2392,6 @@ fn try_cast(v: &Value, target: &str) -> Option<Value> {
     }
 }
 
-/// Round-trip clean coercion: cast to target, cast back into the value's
-/// original variant, then forward to target again. Accepts iff both forward
-/// casts agree AND the round-tripped value equals the original. Lossy
-/// conversions (3.7 → int, 2.1 → bool, -1 → bool) fail.
 fn coerce_to(val: &Value, target: &str) -> Result<Value, String> {
     if !is_known_type(target) {
         return Err(format!("unknown type annotation: {}", target));
@@ -2715,15 +2409,10 @@ fn coerce_to(val: &Value, target: &str) -> Result<Value, String> {
         }
     };
 
-    // Identity (already-the-target) shortcut: if the forward cast is a
-    // structural no-op, no round-trip is needed.
     if values_equal(&t1, val) {
         return Ok(t1);
     }
 
-    // The "source type" for the back-cast is the broadest target try_cast
-    // knows for the value's discriminant. For Number we use "float" since
-    // that's an unconstrained f64; for Bool/Str their own name.
     let back_target = match val {
         Value::Number(_) => "float",
         Value::Bool(_) => "bool",
@@ -2770,11 +2459,6 @@ fn values_equal(a: &Value, b: &Value) -> bool {
     }
 }
 
-/// Apply the declared type to a value being bound. Value-types (int, float,
-/// bool, str) enforce round-trip coercion; any other identifier is treated
-/// as a unit label and spice-wraps the value with that label. `let x: F =
-/// 22n` discards whatever unit `22n` already had and tags x as F — the
-/// declared output wins, as the user spec'd.
 fn apply_type_annotation(val: &Value, ann: Option<&str>) -> Result<Value, String> {
     match ann {
         Some(a) if is_known_type(a) => coerce_to(val, a),
@@ -2796,9 +2480,6 @@ fn apply_unit_annotation(val: &Value, unit: &str) -> Result<Value, String> {
     }
 }
 
-/// Apply a function's declared return type to its result. Void returns
-/// pass through untouched — a declared return type only makes sense when
-/// the body actually produced a value.
 fn apply_fn_return_type(ret_ty: &Option<String>, val: Value, fn_name: &str) -> Result<Value, String> {
     match ret_ty {
         Some(t) if !matches!(val, Value::Void) => apply_type_annotation(&val, Some(t))
@@ -2824,7 +2505,6 @@ pub enum EvalFormat {
 
 // --- Module support ---
 
-/// Collected top-level bindings from a module after evaluation.
 #[derive(Debug, Clone, Default)]
 pub struct ModuleExports {
     pub vars: HashMap<String, Value>,
@@ -2832,16 +2512,12 @@ pub struct ModuleExports {
     pub solved_fns: HashMap<String, SolvedFnDef>,
 }
 
-/// A parsed `use` declaration: module name and optional specific item.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UseDecl {
     pub module: String,
     pub item: Option<String>,
 }
 
-/// A direct cell reference surfaced by a formula — used by the viewport's
-/// dependency graph. Bare refs inside a cell formula are resolved against
-/// the owning table before the ref is emitted.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FormulaRef {
     pub block: Option<String>,
@@ -2849,23 +2525,14 @@ pub struct FormulaRef {
     pub cell: (u32, u32),
 }
 
-/// Opaque pre-parsed cell formula. Viewport parses each `/=...` cell once,
-/// harvests `refs()` to build a dep graph, then evaluates in topo order via
-/// `Interpreter::eval_formula`.
 pub struct ParsedFormula {
     ast: Expr,
 }
 
-/// Parse a cell formula body (the text AFTER `/=`). Produces a ParsedFormula
-/// that can be evaluated later against any interpreter with the owning
-/// table set as current_table. SPICE notation is off by default — call
-/// `parse_formula_with_spice` from a context that knows the block state.
 pub fn parse_formula(text: &str) -> Result<ParsedFormula, String> {
     parse_formula_with_spice(text, false)
 }
 
-/// Parse a cell formula with explicit SPICE-mode gating. The viewport
-/// passes `true` when the formula's owning block imports `spice`.
 pub fn parse_formula_with_spice(text: &str, spice: bool) -> Result<ParsedFormula, String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -2878,10 +2545,6 @@ pub fn parse_formula_with_spice(text: &str, spice: bool) -> Result<ParsedFormula
 }
 
 impl ParsedFormula {
-    /// Cells this formula directly references, with bare refs resolved
-    /// against `current_table` (the formula's owning table) and bare H4
-    /// tables (no block qualifier) left as `block: None` — the viewport
-    /// looks up such refs in its module-scoped index.
     pub fn refs(&self, current_table: &str) -> Vec<FormulaRef> {
         let mut out = Vec::new();
         collect_formula_refs(&self.ast, current_table, &mut out);
@@ -2958,7 +2621,6 @@ fn collect_formula_refs(expr: &Expr, current_table: &str, out: &mut Vec<FormulaR
 }
 
 impl Interpreter {
-    /// Snapshot the interpreter's top-level bindings as exports.
     pub fn exports(&self) -> ModuleExports {
         ModuleExports {
             vars: self.vars.clone(),
@@ -2967,9 +2629,7 @@ impl Interpreter {
         }
     }
 
-    /// Pre-populate scope with another module's exports. All bindings
-    /// are imported flat (as if written locally). Existing bindings
-    /// with the same name are overwritten.
+    /// imports every binding from `exports` into the current scope.
     pub fn import_all(&mut self, exports: &ModuleExports) {
         for (name, val) in &exports.vars {
             self.vars.insert(name.clone(), val.clone());
@@ -2982,8 +2642,6 @@ impl Interpreter {
         }
     }
 
-    /// Import a single named binding from exports. Returns false if
-    /// the name doesn't exist in the exports.
     pub fn import_item(&mut self, exports: &ModuleExports, item: &str) -> bool {
         let mut found = false;
         if let Some(val) = exports.vars.get(item) {
@@ -3002,9 +2660,6 @@ impl Interpreter {
     }
 }
 
-/// Scan text for `use` declarations without executing anything.
-/// Returns the list of UseDecls found. Lines that fail to parse
-/// are silently skipped (they'll be treated as prose).
 pub fn extract_use_declarations(text: &str) -> Vec<UseDecl> {
     let mut decls = Vec::new();
     for line in text.lines() {
@@ -3026,13 +2681,9 @@ pub fn interpret_document(lines: &[(usize, &str, bool)]) -> Vec<InterpResult> {
     interpret_document_with(&mut interp, lines)
 }
 
-/// Like `interpret_document`, but uses an existing interpreter (with
-/// pre-populated scope from module imports).
 pub fn interpret_document_with(interp: &mut Interpreter, lines: &[(usize, &str, bool)]) -> Vec<InterpResult> {
     let mut results = Vec::new();
 
-    // First pass: collect the entire program from cordial lines
-    // and evaluate line by line, recording results for eval lines
     let mut brace_depth: i32 = 0;
     let mut block_acc: Vec<String> = Vec::new();
 
@@ -3069,7 +2720,6 @@ pub fn interpret_document_with(interp: &mut Interpreter, lines: &[(usize, &str, 
             }
         } else {
             let trimmed = content.trim();
-            // track brace depth for multi-line blocks
             let opens = trimmed.matches('{').count() as i32;
             let closes = trimmed.matches('}').count() as i32;
 
@@ -3098,12 +2748,6 @@ pub fn interpret_document_with(interp: &mut Interpreter, lines: &[(usize, &str, 
     results
 }
 
-/// Flatten a value into the sequence of numbers an aggregate sees. Cell
-/// ranges arrive as nested `Value::Array`s (rows of cells); literal
-/// arrays may also be 1D. Strings that happen to be number-parseable DO
-/// count — matching how cell reads auto-promote. Non-numeric strings,
-/// booleans, voids, and errors are skipped silently so a `sum` over a
-/// column with a header row still does the right thing.
 fn flatten_numbers(v: &Value) -> Vec<f64> {
     let mut out = Vec::new();
     walk(v, &mut out);
@@ -3127,10 +2771,6 @@ fn flatten_numbers(v: &Value) -> Vec<f64> {
     }
 }
 
-/// Dispatch the numeric aggregation after the argument has been flattened.
-/// Kept separate from the call-site so the same core is used from any
-/// future aggregate (median, mode, variance, …) without rewriting the
-/// unpacking.
 fn aggregate(name: &str, nums: &[f64]) -> Result<Value, String> {
     match name {
         "sum" => Ok(Value::Number(nums.iter().sum())),
@@ -3252,7 +2892,6 @@ mod tests {
 
     #[test]
     fn logical_operators_keyword_forms() {
-        // and/or/not are interchangeable with &&/||/!.
         assert_eq!(eval_one("true and false"), "false");
         assert_eq!(eval_one("true or false"), "true");
         assert_eq!(eval_one("not true"), "false");
@@ -3261,31 +2900,26 @@ mod tests {
 
     #[test]
     fn pi_constant() {
-        // pi resolves to π without parens.
         let r = eval_one("pi");
         assert!(r.starts_with("3.14159"), "expected pi, got: {}", r);
-        // Usable in expressions.
         let r2 = eval_one("pi * 2");
         assert!(r2.starts_with("6.283185"), "expected 2π, got: {}", r2);
     }
 
     #[test]
     fn pi_can_be_shadowed_by_let() {
-        // Standard scope rule: a local binding hides the built-in.
         let input = "let pi = 3\n/= pi";
         assert_eq!(eval(input), "3");
     }
 
     #[test]
     fn strip_operator_bool_to_number() {
-        // ~true and ~false demote to their numeric form.
         assert_eq!(eval_one("~true"), "1");
         assert_eq!(eval_one("~false"), "0");
     }
 
     #[test]
     fn strip_operator_bridges_bool_and_number() {
-        // The motivating use case: comparing a typed bool to a typed int.
         let input = "let this: bool = 0\nlet that: int = 0\n/= ~this == ~that";
         assert_eq!(eval(input), "true");
     }
@@ -3308,14 +2942,11 @@ mod tests {
         assert_eq!(eval_one("false is bool"), "true");
         assert_eq!(eval_one("\"hello\" is str"), "true");
         assert_eq!(eval_one("[1, 2, 3] is array"), "true");
-        // int and float overlap for whole-valued numbers (int ⊂ float).
         assert_eq!(eval_one("1 is int"), "true");
         assert_eq!(eval_one("1 is float"), "true");
         assert_eq!(eval_one("1.0 is int"), "true");
-        // Non-integer floats are NOT int.
         assert_eq!(eval_one("1.5 is int"), "false");
         assert_eq!(eval_one("1.5 is float"), "true");
-        // Wrong-kind checks.
         assert_eq!(eval_one("1 is bool"), "false");
         assert_eq!(eval_one("true is int"), "false");
         assert_eq!(eval_one("\"42\" is int"), "false");
@@ -3329,7 +2960,6 @@ mod tests {
 
     #[test]
     fn is_keyword_combines_with_logic() {
-        // is at comparison precedence: parses as `(x is int) and (x > 0)`.
         let input = "let x = 5\n/= x is int and x > 0";
         assert_eq!(eval(input), "true");
         let input2 = "let x = 5\n/= x is bool or x is int";
@@ -3338,10 +2968,8 @@ mod tests {
 
     #[test]
     fn logical_operators_mixed_forms() {
-        // Symbolic and keyword forms in the same expression.
         assert_eq!(eval_one("true and not false"), "true");
         assert_eq!(eval_one("(true or false) and not false"), "true");
-        // !or composition gives nand semantics: not(a or b)
         assert_eq!(eval_one("!(true or true)"), "false");
         assert_eq!(eval_one("not (false or false)"), "true");
     }
@@ -3392,8 +3020,6 @@ mod tests {
 
     #[test]
     fn type_annotation_int_lossy_rejected() {
-        // Round-trip rule: 3.7 -> int -> float != 3.7, so this is lossy and
-        // must error.
         let input = "let x: int = 3.7\n/= x";
         let result = eval(input);
         assert!(result.contains("error") || result.contains("lossy"), "should reject lossy: {}", result);
@@ -3401,15 +3027,12 @@ mod tests {
 
     #[test]
     fn type_annotation_int_exact_accepted() {
-        // 3.0 -> int -> float -> int is exact, so this passes.
         let input = "let x: int = 3.0\n/= x";
         assert_eq!(eval(input), "3");
     }
 
     #[test]
     fn type_stickiness_reassign_lossy_rejected() {
-        // boolFlag is bool; assigning 0.1 to it must fail the round-trip
-        // (0.1 -> bool fails because 0.1 isn't 0 or 1).
         let input = "let f: bool = 0\nf = 0.1\n/= f";
         let result = eval(input);
         assert!(result.contains("error") || result.contains("lossy") || result.contains("false"),
@@ -3418,14 +3041,12 @@ mod tests {
 
     #[test]
     fn type_stickiness_reassign_clean_accepted() {
-        // 1 cleanly coerces to true.
         let input = "let f: bool = 0\nf = 1\n/= f";
         assert_eq!(eval(input), "true");
     }
 
     #[test]
     fn type_stickiness_redeclare_changes_type() {
-        // `let` overrides any prior type stickiness.
         let input = "let x: int = 3\nlet x: bool = 1\n/= x";
         assert_eq!(eval(input), "true");
     }
@@ -3457,7 +3078,6 @@ mod tests {
 
     #[test]
     fn type_annotation_str_from_int_clean() {
-        // Round-trip: 42 -> "42" -> 42 is exact, so this coerces cleanly.
         let input = "let x: str = 42\n/= x";
         assert_eq!(eval(input), "42");
     }
@@ -3492,7 +3112,6 @@ mod tests {
     #[test]
     fn error_recovery() {
         let input = "let x = bad_var\nlet y = 5\n/= y";
-        // x assignment fails, but y should still work
         let result = eval(input);
         assert!(result.contains("5"), "should recover and eval y: {}", result);
     }
@@ -3701,7 +3320,6 @@ fn find(arr, target) {
 
     #[test]
     fn use_statement_parses() {
-        // use is a no-op at exec time — just check it doesn't error
         let mut interp = Interpreter::new();
         assert!(interp.exec_line("use budget").is_ok());
         assert!(interp.exec_line("use budget::ramp").is_ok());
@@ -3756,7 +3374,6 @@ fn find(arr, target) {
         assert!(module_b.eval_expr_str("y").is_err());
     }
 
-    // --- Cell references ---
 
     #[test]
     fn cell_address_parses_A1() {
@@ -3988,14 +3605,12 @@ fn find(arr, target) {
 
     #[test]
     fn cell_address_case_insensitive_parse() {
-        // `@BUDGET:a1` should work identically to `@budget:A1`.
         let mut i = Interpreter::new();
         i.register_table("budget", vec![vec!["7".into()]]);
         let v = i.eval_expr_str("@BUDGET:a1").unwrap();
         assert!(matches!(v, Value::Number(n) if n == 7.0));
     }
 
-    // --- Aggregate fns ---
 
     fn approx(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9
@@ -4060,14 +3675,11 @@ fn find(arr, target) {
             vec!["3".into(), "".into(),  "4".into()],
         ]);
         let v = i.eval_expr_str("count(@t)").unwrap();
-        // Four parseable numbers in the flattened view.
         assert!(matches!(v, Value::Number(n) if n == 4.0));
     }
 
     #[test]
     fn std_devp_matches_formula() {
-        // Population std-dev of {2,4,4,4,5,5,7,9}:
-        //   mean = 5, variance = 4, stddev = 2.
         let mut i = Interpreter::new();
         let v = i.eval_expr_str("std_devp([2, 4, 4, 4, 5, 5, 7, 9])").unwrap();
         match v {
@@ -4078,7 +3690,6 @@ fn find(arr, target) {
 
     #[test]
     fn std_devs_differs_from_std_devp() {
-        // Sample stddev uses (n-1) in the denominator.
         let mut i = Interpreter::new();
         let p = match i.eval_expr_str("std_devp([1, 2, 3, 4])").unwrap() {
             Value::Number(n) => n,
@@ -4104,7 +3715,6 @@ fn find(arr, target) {
         match v { Value::Number(n) => assert!(approx(n, 3.14)), _ => panic!() }
         let v = i.eval_expr_str("round(3.14159, 4)").unwrap();
         match v { Value::Number(n) => assert!(approx(n, 3.1416)), _ => panic!() }
-        // Default digits (0) still works.
         let v = i.eval_expr_str("round(3.7)").unwrap();
         assert!(matches!(v, Value::Number(n) if n == 4.0));
     }
@@ -4140,10 +3750,7 @@ fn find(arr, target) {
         assert!(i.eval_expr_str("avg(1, 2)").is_err());
     }
 
-    // --- Function inversion (solve! / where) ---
-
     fn solve_interp() -> Interpreter {
-        // Reusable setup: square fn on one param. Easy to verify by hand.
         let mut i = Interpreter::new();
         i.exec_line("fn square(x) { x * x }").unwrap();
         i
@@ -4157,7 +3764,7 @@ fn find(arr, target) {
         let def = &i.solved_fns["invsq"];
         assert_eq!(def.source_fn, "square");
         assert_eq!(def.solve_param_idx, 0);
-        assert_eq!(def.new_params.len(), 1); // just the target slot
+        assert_eq!(def.new_params.len(), 1);
     }
 
     #[test]
@@ -4196,8 +3803,6 @@ fn find(arr, target) {
     #[test]
     fn math_form_result_not_first_errors() {
         let mut i = solve_interp();
-        // `x` is the target but also listed as the result position — the
-        // first param has to be the result variable, not the target.
         let err = i.exec_line("let bad(x) = x where square(x) = out").unwrap_err();
         assert!(err.contains("first parameter"), "error was: {}", err);
     }
@@ -4206,15 +3811,12 @@ fn find(arr, target) {
     fn math_form_mismatched_params_errors() {
         let mut i = Interpreter::new();
         i.exec_line("fn f(a, b) { a + b }").unwrap();
-        // Declared params are [out, c] but source_args minus target are [b].
         let err = i.exec_line("let bad(out, c) = a where f(a, b) = out").unwrap_err();
         assert!(err.contains("parameters"), "error was: {}", err);
     }
 
     #[test]
     fn lc_tank_inversion() {
-        // Define f0(l, c) = 1 / (2π√(lc)), create lfreq via solve!, compare
-        // the inverted result against the analytical closed-form.
         let mut i = Interpreter::new();
         i.exec_line("fn f0(l, c) { 1 / (2 * pi * sqrt(l * c)) }").unwrap();
         i.exec_line("let lfreq = solve!(l, f0)").unwrap();
@@ -4244,7 +3846,6 @@ fn find(arr, target) {
 
     #[test]
     fn non_convergent_errors() {
-        // Constant function has zero derivative everywhere.
         let mut i = Interpreter::new();
         i.exec_line("fn flat(x) { 42 }").unwrap();
         i.exec_line("let inv = solve!(x, flat)").unwrap();
@@ -4264,17 +3865,12 @@ fn find(arr, target) {
 
     #[test]
     fn let_with_params_is_regular_fn_def() {
-        // `let f(x) = expr` without a `where` clause is equivalent to the
-        // bare `f(x) = expr` form. Covered here to make sure the parser
-        // extension didn't break that path.
         let mut i = Interpreter::new();
         i.exec_line("let double(x) = x * 2").unwrap();
         assert!(i.fns.contains_key("double"));
         let v = i.eval_expr_str("double(21)").unwrap();
         assert!(matches!(v, Value::Number(n) if n == 42.0));
     }
-
-    // --- Implicit multiplication (juxtaposition) ---
 
     #[test]
     fn implicit_mul_number_times_ident() {
@@ -4300,9 +3896,6 @@ fn find(arr, target) {
 
     #[test]
     fn implicit_mul_only_fires_adjacent() {
-        // `2pi` inserts the Star; `2 pi` does not — locks in the adjacency
-        // rule. Whitespace between the number and ident keeps `pi` as a
-        // leftover token, which the parser drops, so the result is just `2`.
         let mut i = Interpreter::new();
         let v_adj = i.eval_expr_str("2pi").unwrap();
         let v_space = i.eval_expr_str("2 pi").unwrap();
@@ -4336,14 +3929,8 @@ fn find(arr, target) {
         assert!(matches!(v, Value::Number(n) if n == -1000.0));
     }
 
-    // --- SPICE notation (gated on `use spice`) ---
-
     #[test]
     fn spice_off_by_default() {
-        // Without `use spice`, `100n` falls back to implicit mul of 100 and n.
-        // When n isn't defined, that's an undefined-variable error — which is
-        // the behavior we want, so a user who hasn't opted in sees a clean
-        // error instead of a silent reinterpretation.
         let mut i = Interpreter::new();
         assert!(i.eval_expr_str("100n").is_err());
     }
@@ -4393,7 +3980,6 @@ fn find(arr, target) {
         let mut i = Interpreter::new();
         i.exec_line("use spice").unwrap();
         let v = i.eval_expr_str("100nF + 1nF").unwrap();
-        // 101e-9 → renormalized 101NF.
         assert_eq!(v.display(), "101NF");
     }
 
@@ -4401,7 +3987,6 @@ fn find(arr, target) {
     fn spice_cross_magnitude_renormalization() {
         let mut i = Interpreter::new();
         i.exec_line("use spice").unwrap();
-        // 2500nF = 2.5uF; rendered with closest prefix.
         let v = i.eval_expr_str("2500nF").unwrap();
         assert_eq!(v.display(), "2.5UF");
     }
@@ -4416,9 +4001,6 @@ fn find(arr, target) {
 
     #[test]
     fn spice_unrecognized_suffix_falls_back_to_implicit_mul() {
-        // `2pi` under spice mode: `pi` isn't a valid suffix, so we fall
-        // back to implicit multiplication. This keeps math-style input
-        // working even after `use spice`.
         let mut i = Interpreter::new();
         i.exec_line("use spice").unwrap();
         let v = i.eval_expr_str("2pi").unwrap();
@@ -4429,7 +4011,6 @@ fn find(arr, target) {
     fn spice_display_small_value() {
         let mut i = Interpreter::new();
         i.exec_line("use spice").unwrap();
-        // 0.5nF = 500pF.
         let v = i.eval_expr_str("0.5nF").unwrap();
         assert_eq!(v.display(), "500PF");
     }
@@ -4444,16 +4025,11 @@ fn find(arr, target) {
 
     #[test]
     fn spice_plain_number_display_unchanged() {
-        // A pure float result (no unit) should still use the plain
-        // number formatter, not the SPICE path.
         let mut i = Interpreter::new();
         i.exec_line("use spice").unwrap();
         let v = i.eval_expr_str("1 + 1").unwrap();
         assert_eq!(v.display(), "2");
     }
-
-    // Unit-label algebra (mul · , div /, cancellation, additive strip on
-    // mismatch) plus the declaration-overrides-algebra rules.
 
     #[test]
     fn unit_mul_different_labels_concatenates() {
@@ -4470,7 +4046,6 @@ fn find(arr, target) {
         let mut i = Interpreter::new();
         i.exec_line("use spice").unwrap();
         let v = i.eval_expr_str("6F / 3F").unwrap();
-        // Same label on both sides → dimensionless → plain number.
         assert!(matches!(v, Value::Number(n) if n == 2.0));
     }
 
@@ -4484,8 +4059,6 @@ fn find(arr, target) {
 
     #[test]
     fn unit_add_mismatched_strips() {
-        // F + H has no clean algebraic answer, so the result drops the
-        // spice wrapper entirely rather than picking one side.
         let mut i = Interpreter::new();
         i.exec_line("use spice").unwrap();
         let v = i.eval_expr_str("1F + 2H").unwrap();
@@ -4506,13 +4079,11 @@ fn find(arr, target) {
         i.exec_line("use spice").unwrap();
         i.exec_line("let x: F = 22n").unwrap();
         let v = i.eval_expr_str("x").unwrap();
-        // 22n = 22e-9 → tagged F → display as nanofarads.
         assert_eq!(v.display(), "22NF");
     }
 
     #[test]
     fn unit_annotation_overrides_rhs_unit() {
-        // `let x: F = 22nH` — declared F wins, the H label is dropped.
         let mut i = Interpreter::new();
         i.exec_line("use spice").unwrap();
         i.exec_line("let x: F = 22nH").unwrap();
@@ -4528,8 +4099,6 @@ fn find(arr, target) {
 
     #[test]
     fn fn_param_type_wraps_arg_on_entry() {
-        // f receives a raw number; the param's `: F` annotation tags it
-        // inside the body.
         let mut i = Interpreter::new();
         i.exec_line("fn f(c: F) { return c }").unwrap();
         let v = i.eval_expr_str("f(5)").unwrap();
@@ -4538,8 +4107,6 @@ fn find(arr, target) {
 
     #[test]
     fn fn_return_type_overrides_algebra() {
-        // The algebra inside would produce `F·H`, but the declared return
-        // type replaces whatever label comes out.
         let mut i = Interpreter::new();
         i.exec_line("use spice").unwrap();
         i.exec_line("fn ry(c: F, l: H) -> ohm { return l * c }").unwrap();
@@ -4557,9 +4124,6 @@ fn find(arr, target) {
 
     #[test]
     fn solve_through_typed_source_fn() {
-        // When the source fn has typed params and return type, its result
-        // comes back spice-tagged. The solver unwraps that layer before
-        // doing Newton steps — otherwise it'd reject every iteration.
         let mut i = Interpreter::new();
         i.exec_line("use spice").unwrap();
         i.exec_line("fn f0(l: H, c: F) -> Hz {\n    return 1 / ((2 * pi) * (sqrt(l * c)))\n}").unwrap();
@@ -4580,15 +4144,10 @@ fn find(arr, target) {
 
     #[test]
     fn spice_lc_tank_use_case() {
-        // End-to-end reproduction of the Freq note.
         let mut i = Interpreter::new();
         i.exec_line("use spice").unwrap();
         i.exec_line("fn L(f, c) {\n    let b = (2 * pi * f)\n    return 1 / ((b*b) * c)\n}").unwrap();
         let v = i.eval_expr_str("L(2600, 1nF)").unwrap();
-        // Closed-form: 1 / (4π²·2600²·1e-9) ≈ 3.747e-3 H. The body does its
-        // arithmetic in F (the unit that propagates from `c`), so the result
-        // comes back as a spice-tagged value with label `1/F`. Numerically
-        // it's still the right henry value — only the label is symbolic.
         let n = match v {
             Value::Number(n) => n,
             Value::Array(ref a) if a.len() == 2 => match &a[0] {

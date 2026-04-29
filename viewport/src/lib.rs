@@ -3,6 +3,7 @@ use std::ffi::{c_char, c_void, CStr, CString};
 pub mod block;
 pub mod blocks;
 mod bridge;
+pub mod browser;
 mod editor;
 pub mod export;
 mod handle;

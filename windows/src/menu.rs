@@ -36,6 +36,7 @@ pub enum MenuAction {
     Settings,
     ExportCrate,
     ToggleAutoPair(u32),
+    ToggleBrowser,
 }
 
 impl AppMenu {
@@ -45,6 +46,7 @@ impl AppMenu {
         let file = Submenu::new("File", true);
         file.append(&MenuItem::with_id("new", "New Note", true, Some(Accelerator::new(Some(Modifiers::CONTROL), Code::KeyN)))).ok();
         file.append(&MenuItem::with_id("open", "Open...", true, Some(Accelerator::new(Some(Modifiers::CONTROL), Code::KeyO)))).ok();
+        file.append(&MenuItem::with_id("browse", "Documents...", true, Some(Accelerator::new(Some(Modifiers::ALT), Code::KeyB)))).ok();
         file.append(&PredefinedMenuItem::separator()).ok();
         file.append(&MenuItem::with_id("save", "Save", true, Some(Accelerator::new(Some(Modifiers::CONTROL), Code::KeyS)))).ok();
         file.append(&MenuItem::with_id("save_as", "Save As...", true, Some(Accelerator::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyS)))).ok();
@@ -119,6 +121,7 @@ impl AppMenu {
             match e.id().0.as_str() {
                 "new" => Some(MenuAction::NewNote),
                 "open" => Some(MenuAction::Open),
+                "browse" => Some(MenuAction::ToggleBrowser),
                 "save" => Some(MenuAction::Save),
                 "save_as" => Some(MenuAction::SaveAs),
                 "quit" => Some(MenuAction::Quit),
