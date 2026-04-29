@@ -19,6 +19,7 @@ use acord_viewport::{
 };
 use acord_viewport::browser::{self, BrowserHandle};
 use acord_viewport::handle as viewport_handle;
+use acord_viewport::editor::ShellAction;
 
 use crate::config::Config;
 use crate::shortcuts::{match_shortcut, MenuAction};
@@ -157,6 +158,22 @@ impl App {
     fn close_browser(&mut self) {
         self.browser_handle = None;
         self.browser_window = None;
+    }
+
+    fn drain_shell_actions(&mut self, event_loop: &ActiveEventLoop) {
+        if self.handle.is_null() { return; }
+        let action = unsafe { (*self.handle).state.take_pending_shell_action() };
+        let Some(action) = action else { return };
+        match action {
+            ShellAction::NewNote => self.new_note(),
+            ShellAction::Open => self.open_file(),
+            ShellAction::Save => self.save_file(),
+            ShellAction::SaveAs => self.save_file_as(),
+            ShellAction::Quit => event_loop.exit(),
+            ShellAction::Settings => self.dispatch_menu(MenuAction::Settings, event_loop),
+            ShellAction::ExportCrate => self.dispatch_menu(MenuAction::ExportCrate, event_loop),
+            ShellAction::ToggleBrowser => self.toggle_browser(event_loop),
+        }
     }
 
     fn drain_browser_open(&mut self) {
@@ -499,6 +516,7 @@ impl ApplicationHandler for App {
             self.last_autosave_attempt = Instant::now();
             self.try_autosave();
         }
+        self.drain_shell_actions(_event_loop);
         self.drain_browser_open();
         if let Some(w) = &self.window {
             if !self.handle.is_null() {

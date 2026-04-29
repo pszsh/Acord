@@ -4,7 +4,7 @@ pub mod block;
 pub mod blocks;
 mod bridge;
 pub mod browser;
-mod editor;
+pub mod editor;
 pub mod export;
 pub mod handle;
 pub mod heading_block;
