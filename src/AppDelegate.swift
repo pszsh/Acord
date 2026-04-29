@@ -257,8 +257,43 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         formatItem.target = self
         menu.addItem(formatItem)
 
+        menu.addItem(.separator())
+        menu.addItem(buildAutoPairMenu())
+
         item.submenu = menu
         return item
+    }
+
+    private func buildAutoPairMenu() -> NSMenuItem {
+        let item = NSMenuItem(title: "Auto Pair", action: nil, keyEquivalent: "")
+        let menu = NSMenu(title: "Auto Pair")
+        let pairs: [(String, UInt32)] = [
+            ("Parens ( )", 1),
+            ("Brackets [ ]", 2),
+            ("Braces { }", 4),
+            ("Single quotes ' '", 8),
+            ("Double quotes \" \"", 16),
+            ("Backticks ` `", 32),
+        ]
+        let flags = ConfigManager.shared.autoPairFlags
+        for (label, bit) in pairs {
+            let mi = NSMenuItem(title: label, action: #selector(toggleAutoPair(_:)), keyEquivalent: "")
+            mi.target = self
+            mi.tag = Int(bit)
+            mi.state = (flags & bit) != 0 ? .on : .off
+            menu.addItem(mi)
+        }
+        item.submenu = menu
+        return item
+    }
+
+    @objc private func toggleAutoPair(_ sender: NSMenuItem) {
+        let bit = UInt32(sender.tag)
+        var flags = ConfigManager.shared.autoPairFlags
+        flags ^= bit
+        ConfigManager.shared.autoPairFlags = flags
+        sender.state = (flags & bit) != 0 ? .on : .off
+        viewport?.setAutoPairFlags(flags)
     }
 
     private func buildRenderMenu() -> NSMenuItem {
@@ -610,6 +645,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private func syncGutterPrefsToViewport() {
         viewport?.setLineIndicator(ConfigManager.shared.lineIndicatorMode)
         viewport?.setGutterRainbow(ConfigManager.shared.gutterRainbow)
+        viewport?.setAutoPairFlags(ConfigManager.shared.autoPairFlags)
     }
 
     @objc private func toggleBrowser() {

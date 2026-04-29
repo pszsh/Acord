@@ -265,6 +265,11 @@ class IcedViewportView: NSView {
         viewport_set_gutter_rainbow(h, enabled)
     }
 
+    func setAutoPairFlags(_ flags: UInt32) {
+        guard let h = viewportHandle else { return }
+        viewport_set_auto_pair_flags(h, flags)
+    }
+
     /// Returns 0 = Live, 1 = Editor, 2 = View.
     func renderMode() -> UInt32 {
         guard let h = viewportHandle else { return 0 }

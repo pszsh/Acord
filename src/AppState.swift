@@ -300,7 +300,7 @@ class AppState: ObservableObject {
         let id = bridge.newDocument()
         currentNoteID = id
         selectedNoteIDs = [id]
-        documentText = ""
+        documentText = "# "
         evalResults = [:]
         modified = false
         currentFileURL = nil

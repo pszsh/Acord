@@ -62,4 +62,9 @@ class ConfigManager {
         get { CGFloat(Double(config["zoomLevel"] ?? "0") ?? 0) }
         set { config["zoomLevel"] = String(Double(newValue)); save() }
     }
+
+    var autoPairFlags: UInt32 {
+        get { UInt32(config["autoPairFlags"] ?? "63") ?? 63 }
+        set { config["autoPairFlags"] = String(newValue); save() }
+    }
 }

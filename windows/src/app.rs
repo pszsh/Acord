@@ -15,6 +15,7 @@ use acord_viewport::{
     viewport_create, viewport_destroy, viewport_render, viewport_resize,
     viewport_set_text, viewport_get_text, viewport_set_theme, viewport_set_lang,
     viewport_set_line_indicator, viewport_set_gutter_rainbow,
+    viewport_set_auto_pair_flags,
     viewport_send_command, viewport_free_string,
     ViewportHandle,
 };
@@ -64,6 +65,7 @@ impl App {
         let ind = CString::new(self.config.line_indicator()).unwrap();
         viewport_set_line_indicator(self.handle, ind.as_ptr());
         viewport_set_gutter_rainbow(self.handle, self.config.gutter_rainbow());
+        viewport_set_auto_pair_flags(self.handle, self.config.auto_pair_flags());
     }
 
     fn dispatch_menu(&mut self, action: MenuAction, event_loop: &ActiveEventLoop) {
@@ -96,6 +98,14 @@ impl App {
             MenuAction::Undo => { /* TODO */ },
             MenuAction::Redo => { /* TODO */ },
             MenuAction::ExportCrate => { /* TODO */ },
+            MenuAction::ToggleAutoPair(bit) => {
+                let new_flags = self.config.auto_pair_flags() ^ bit;
+                self.config.set_auto_pair_flags(new_flags);
+                viewport_set_auto_pair_flags(self.handle, new_flags);
+                if let Some(menu) = &self._menu {
+                    menu.set_auto_pair_check(bit, (new_flags & bit) != 0);
+                }
+            }
         }
     }
 
@@ -153,8 +163,8 @@ impl App {
     }
 
     fn new_note(&mut self) {
-        let empty = CString::new("").unwrap();
-        viewport_set_text(self.handle, empty.as_ptr());
+        let stub = CString::new("# ").unwrap();
+        viewport_set_text(self.handle, stub.as_ptr());
         if let Some(w) = &self.window {
             w.set_title("Acord");
         }
@@ -237,12 +247,15 @@ impl ApplicationHandler for App {
         self.handle = viewport_create(hwnd, w, h, self.scale);
         self.sync_settings();
 
-        // Set up native menu bar.
-        let app_menu = AppMenu::new();
+        let app_menu = AppMenu::new(self.config.auto_pair_flags());
         #[cfg(target_os = "windows")]
         {
             if let raw_window_handle::RawWindowHandle::Win32(h) = raw {
-                unsafe { app_menu.menu.init_for_hwnd(h.hwnd.get()).ok(); }
+                let theme = match self.config.theme_mode() {
+                    "light" => muda::MenuTheme::Light,
+                    _ => muda::MenuTheme::Dark,
+                };
+                unsafe { app_menu.menu.init_for_hwnd_with_theme(h.hwnd.get(), theme).ok(); }
             }
         }
         self._menu = Some(app_menu);

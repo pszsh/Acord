@@ -13,6 +13,7 @@ use acord_viewport::{
     viewport_create, viewport_destroy, viewport_render, viewport_resize,
     viewport_set_text, viewport_get_text, viewport_set_theme, viewport_set_lang,
     viewport_set_line_indicator, viewport_set_gutter_rainbow,
+    viewport_set_auto_pair_flags,
     viewport_send_command, viewport_free_string,
     ViewportHandle,
 };
@@ -60,6 +61,7 @@ impl App {
         let ind = CString::new(self.config.line_indicator()).unwrap();
         viewport_set_line_indicator(self.handle, ind.as_ptr());
         viewport_set_gutter_rainbow(self.handle, self.config.gutter_rainbow());
+        viewport_set_auto_pair_flags(self.handle, self.config.auto_pair_flags());
     }
 
     fn dispatch_menu(&mut self, action: MenuAction, event_loop: &ActiveEventLoop) {
@@ -146,8 +148,8 @@ impl App {
     }
 
     fn new_note(&mut self) {
-        let empty = CString::new("").unwrap();
-        viewport_set_text(self.handle, empty.as_ptr());
+        let stub = CString::new("# ").unwrap();
+        viewport_set_text(self.handle, stub.as_ptr());
         if let Some(w) = &self.window {
             w.set_title("Acord");
         }

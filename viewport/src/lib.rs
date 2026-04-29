@@ -288,6 +288,19 @@ pub extern "C" fn viewport_set_gutter_rainbow(handle: *mut ViewportHandle, enabl
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn viewport_set_auto_pair_flags(handle: *mut ViewportHandle, flags: u32) {
+    editor::auto_pair::set_flags(flags as u8);
+    if let Some(h) = unsafe { handle.as_mut() } {
+        h.needs_redraw = true;
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn viewport_get_auto_pair_flags() -> u32 {
+    editor::auto_pair::flags() as u32
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn viewport_send_command(handle: *mut ViewportHandle, command: u32) {
     let h = match unsafe { handle.as_mut() } {
         Some(h) => h,

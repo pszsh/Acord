@@ -56,6 +56,17 @@ impl Config {
             .map(PathBuf::from)
             .unwrap_or_else(|| config_dir().join("notes"))
     }
+
+    pub fn auto_pair_flags(&self) -> u32 {
+        self.data.get("autoPairFlags")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(63)
+    }
+
+    pub fn set_auto_pair_flags(&mut self, flags: u32) {
+        self.data.insert("autoPairFlags".to_string(), flags.to_string());
+        self.save();
+    }
 }
 
 fn config_dir() -> PathBuf {

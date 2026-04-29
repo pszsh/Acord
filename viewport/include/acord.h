@@ -13,6 +13,20 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#define PAREN (1 << 0)
+
+#define BRACKET (1 << 1)
+
+#define BRACE (1 << 2)
+
+#define SINGLE (1 << 3)
+
+#define DOUBLE (1 << 4)
+
+#define BACKTICK (1 << 5)
+
+#define ALL (((((PAREN | BRACKET) | BRACE) | SINGLE) | DOUBLE) | BACKTICK)
+
 #define BASE_BOOST 0.30
 
 #define THRESHOLD_PX 6.0
@@ -70,6 +84,10 @@ void viewport_set_theme(struct ViewportHandle *handle, const char *name);
 void viewport_set_line_indicator(struct ViewportHandle *handle, const char *mode);
 
 void viewport_set_gutter_rainbow(struct ViewportHandle *handle, bool enabled);
+
+void viewport_set_auto_pair_flags(struct ViewportHandle *handle, uint32_t flags);
+
+uint32_t viewport_get_auto_pair_flags(void);
 
 void viewport_send_command(struct ViewportHandle *handle, uint32_t command);
 

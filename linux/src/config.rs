@@ -55,6 +55,12 @@ impl Config {
             .map(PathBuf::from)
             .unwrap_or_else(|| config_dir().join("notes"))
     }
+
+    pub fn auto_pair_flags(&self) -> u32 {
+        self.data.get("autoPairFlags")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(63)
+    }
 }
 
 /// XDG-friendly config dir with `~/.acord` fallback for parity with the

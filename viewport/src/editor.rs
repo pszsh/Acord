@@ -1,6 +1,34 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Instant;
+
+pub mod auto_pair {
+    use super::{AtomicU8, Ordering};
+
+    pub const PAREN: u8 = 1 << 0;
+    pub const BRACKET: u8 = 1 << 1;
+    pub const BRACE: u8 = 1 << 2;
+    pub const SINGLE: u8 = 1 << 3;
+    pub const DOUBLE: u8 = 1 << 4;
+    pub const BACKTICK: u8 = 1 << 5;
+
+    pub const ALL: u8 = PAREN | BRACKET | BRACE | SINGLE | DOUBLE | BACKTICK;
+
+    static FLAGS: AtomicU8 = AtomicU8::new(ALL);
+
+    pub fn enabled(flag: u8) -> bool {
+        FLAGS.load(Ordering::Relaxed) & flag != 0
+    }
+
+    pub fn flags() -> u8 {
+        FLAGS.load(Ordering::Relaxed)
+    }
+
+    pub fn set_flags(flags: u8) {
+        FLAGS.store(flags, Ordering::Relaxed);
+    }
+}
 
 use iced_wgpu::core::keyboard::{self, Modifiers};
 use iced_wgpu::core::keyboard::key;
@@ -502,20 +530,7 @@ fn md_style() -> markdown::Style {
 
 impl EditorState {
     pub fn new() -> Self {
-        let sample = concat!(
-            "# Block Compositor\n",
-            "Acord renders structured documents with mixed content.\n\n",
-            "## Data Table\n",
-            "| Name  | Age | Role     |\n",
-            "|-------|-----|----------|\n",
-            "| Alice | 30  | Engineer |\n",
-            "| Bob   | 25  | Designer |\n",
-            "| Carol | 35  | Manager  |\n\n",
-            "---\n\n",
-            "### Code Section\n",
-            "let x = 42\n",
-            "/= x * 2\n",
-        );
+        let sample = "# ";
         let block_vec = blocks::parse_blocks(sample, "rust");
         let (registry, layout) = Self::vec_to_registry(block_vec);
         Self {
@@ -2235,24 +2250,21 @@ impl EditorState {
             None => return eval_interp,
         };
 
-        // Find which module this block belongs to
         let my_module = self.modules.iter().find(|m| m.block_ids.contains(&block_id));
 
-        // Evaluate and import root module exports (unless this IS the root)
         let is_root = my_module.map(|m| m.is_root).unwrap_or(false);
         if !is_root {
             if let Some(root) = self.modules.iter().find(|m| m.is_root) {
-                let root_text = self.module_source_text(root);
-                let mut root_interp = interp::Interpreter::new();
-                crate::eval::evaluate_document_with_interp(&mut root_interp, &root_text);
-                eval_interp.import_all(&root_interp.exports());
+                let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+                let root_exports = self.resolve_module_exports(root, &mut visited);
+                eval_interp.import_all(&root_exports);
             }
         }
 
-        // Find use declarations in all text blocks of this module and import those modules
         let use_block_ids: Vec<crate::selection::BlockId> = my_module
             .map(|m| m.block_ids.clone())
             .unwrap_or_default();
+        let my_module_name = my_module.map(|m| m.name.clone()).unwrap_or_default();
         for &bid in &use_block_ids {
             if let Some(block) = self.registry.get(&bid) {
                 if let Some(tb) = block.as_any().downcast_ref::<TextBlock>() {
@@ -2260,18 +2272,11 @@ impl EditorState {
                     let use_decls = interp::extract_use_declarations(&text);
                     for decl in &use_decls {
                         if let Some(dep_module) = self.modules.iter().find(|m| m.name == decl.module) {
-                            let dep_text = self.module_source_text(dep_module);
-                            let mut dep_interp = interp::Interpreter::new();
-                            if let Some(root) = self.modules.iter().find(|m| m.is_root) {
-                                if !dep_module.is_root {
-                                    let root_text = self.module_source_text(root);
-                                    let mut root_interp = interp::Interpreter::new();
-                                    crate::eval::evaluate_document_with_interp(&mut root_interp, &root_text);
-                                    dep_interp.import_all(&root_interp.exports());
-                                }
+                            let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+                            if !my_module_name.is_empty() {
+                                visited.insert(my_module_name.clone());
                             }
-                            crate::eval::evaluate_document_with_interp(&mut dep_interp, &dep_text);
-                            let dep_exports = dep_interp.exports();
+                            let dep_exports = self.resolve_module_exports(dep_module, &mut visited);
                             match &decl.item {
                                 None => eval_interp.import_all(&dep_exports),
                                 Some(s) if s == "*" => eval_interp.import_all(&dep_exports),
@@ -2284,6 +2289,46 @@ impl EditorState {
         }
 
         eval_interp
+    }
+
+    /// Recursively evaluate a module with its `use` declarations resolved.
+    fn resolve_module_exports(
+        &self,
+        module: &crate::module::Module,
+        visited: &mut std::collections::HashSet<String>,
+    ) -> acord_core::interp::ModuleExports {
+        use acord_core::interp;
+
+        if !module.name.is_empty() && !visited.insert(module.name.clone()) {
+            return interp::ModuleExports::default();
+        }
+
+        let mut interp = interp::Interpreter::new();
+
+        if !module.is_root {
+            if let Some(root) = self.modules.iter().find(|m| m.is_root) {
+                if root.name != module.name {
+                    let root_exports = self.resolve_module_exports(root, visited);
+                    interp.import_all(&root_exports);
+                }
+            }
+        }
+
+        let module_text = self.module_source_text(module);
+        let use_decls = interp::extract_use_declarations(&module_text);
+        for decl in &use_decls {
+            if let Some(dep) = self.modules.iter().find(|m| m.name == decl.module) {
+                let dep_exports = self.resolve_module_exports(dep, visited);
+                match &decl.item {
+                    None => interp.import_all(&dep_exports),
+                    Some(s) if s == "*" => interp.import_all(&dep_exports),
+                    Some(item) => { interp.import_item(&dep_exports, item); }
+                }
+            }
+        }
+
+        crate::eval::evaluate_document_with_interp(&mut interp, &module_text);
+        interp.exports()
     }
 
     fn run_eval(&mut self) {
@@ -4499,11 +4544,23 @@ fn macos_key_binding(key_press: KeyPress) -> Option<Binding<Message>> {
             Some(Binding::Custom(Message::ZoomOut))
         }
         // Cmd+0 lives in handle.rs now (FixUp); Cmd+Shift+0 resets zoom.
-        keyboard::Key::Character("[") if !modifiers.logo() && !modifiers.alt() && !modifiers.control() => {
+        keyboard::Key::Character("[") if !modifiers.logo() && !modifiers.alt() && !modifiers.control() && auto_pair::enabled(auto_pair::BRACKET) => {
             Some(Binding::Custom(Message::AutoPair("[", "]")))
         }
-        keyboard::Key::Character("{") if !modifiers.logo() && !modifiers.alt() && !modifiers.control() => {
+        keyboard::Key::Character("{") if !modifiers.logo() && !modifiers.alt() && !modifiers.control() && auto_pair::enabled(auto_pair::BRACE) => {
             Some(Binding::Custom(Message::AutoPair("{", "}")))
+        }
+        keyboard::Key::Character("(") if !modifiers.logo() && !modifiers.alt() && !modifiers.control() && auto_pair::enabled(auto_pair::PAREN) => {
+            Some(Binding::Custom(Message::AutoPair("(", ")")))
+        }
+        keyboard::Key::Character("'") if !modifiers.logo() && !modifiers.alt() && !modifiers.control() && auto_pair::enabled(auto_pair::SINGLE) => {
+            Some(Binding::Custom(Message::AutoPair("'", "'")))
+        }
+        keyboard::Key::Character("\"") if !modifiers.logo() && !modifiers.alt() && !modifiers.control() && auto_pair::enabled(auto_pair::DOUBLE) => {
+            Some(Binding::Custom(Message::AutoPair("\"", "\"")))
+        }
+        keyboard::Key::Character("`") if !modifiers.logo() && !modifiers.alt() && !modifiers.control() && auto_pair::enabled(auto_pair::BACKTICK) => {
+            Some(Binding::Custom(Message::AutoPair("`", "`")))
         }
         keyboard::Key::Named(key::Named::Backspace) if modifiers.alt() => {
             Some(Binding::Sequence(vec![
@@ -4612,24 +4669,14 @@ fn count_leading_char(s: &str, c: char) -> usize {
 /// `text`. column is interpreted as char count (cosmic-text convention).
 fn byte_offset_for_cursor(text: &str, pos: &text_widget::Position) -> usize {
     let mut byte = 0usize;
-    let mut line_idx = 0usize;
-    for line in text.split_inclusive('\n') {
+    for (line_idx, line) in text.split_inclusive('\n').enumerate() {
         if line_idx == pos.line {
-            let col = pos.column;
-            for (i, _) in line.char_indices().take(col) {
-                byte += line.as_bytes()[i..i + 1].len();
+            for (col_idx, (ci, _)) in line.char_indices().enumerate() {
+                if col_idx == pos.column { return byte + ci; }
             }
-            // Walk col chars precisely.
-            let mut walked = 0usize;
-            for (ci, _) in line.char_indices() {
-                if walked == col { return byte.saturating_sub(line.len()) + ci; }
-                walked += 1;
-            }
-            // col >= line length: clamp to end of line content (before \n).
             return byte + line.trim_end_matches('\n').len();
         }
         byte += line.len();
-        line_idx += 1;
     }
     text.len()
 }

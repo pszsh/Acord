@@ -1,9 +1,17 @@
-use muda::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu, accelerator::Accelerator};
+use muda::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu, accelerator::Accelerator};
 use muda::accelerator::{Code, Modifiers};
+
+pub const AP_PAREN: u32 = 1;
+pub const AP_BRACKET: u32 = 2;
+pub const AP_BRACE: u32 = 4;
+pub const AP_SINGLE: u32 = 8;
+pub const AP_DOUBLE: u32 = 16;
+pub const AP_BACKTICK: u32 = 32;
 
 pub struct AppMenu {
     #[allow(dead_code)]
     pub menu: Menu,
+    auto_pair_items: Vec<(u32, CheckMenuItem)>,
 }
 
 pub enum MenuAction {
@@ -27,10 +35,11 @@ pub enum MenuAction {
     Find,
     Settings,
     ExportCrate,
+    ToggleAutoPair(u32),
 }
 
 impl AppMenu {
-    pub fn new() -> Self {
+    pub fn new(auto_pair_flags: u32) -> Self {
         let menu = Menu::new();
 
         let file = Submenu::new("File", true);
@@ -61,12 +70,30 @@ impl AppMenu {
         edit.append(&MenuItem::with_id("italic", "Italic", true, Some(Accelerator::new(Some(Modifiers::CONTROL), Code::KeyI)))).ok();
         edit.append(&MenuItem::with_id("table", "Insert Table", true, Some(Accelerator::new(Some(Modifiers::CONTROL), Code::KeyT)))).ok();
 
+        edit.append(&PredefinedMenuItem::separator()).ok();
+        let auto_pair_sub = Submenu::new("Auto Pair", true);
+        let pair_specs: [(u32, &str, &str); 6] = [
+            (AP_PAREN,    "ap_paren",    "Parens ( )"),
+            (AP_BRACKET,  "ap_bracket",  "Brackets [ ]"),
+            (AP_BRACE,    "ap_brace",    "Braces { }"),
+            (AP_SINGLE,   "ap_single",   "Single quotes ' '"),
+            (AP_DOUBLE,   "ap_double",   "Double quotes \" \""),
+            (AP_BACKTICK, "ap_backtick", "Backticks ` `"),
+        ];
+        let mut auto_pair_items: Vec<(u32, CheckMenuItem)> = Vec::with_capacity(6);
+        for (bit, id, label) in pair_specs {
+            let item = CheckMenuItem::with_id(id, label, true, (auto_pair_flags & bit) != 0, None);
+            auto_pair_sub.append(&item).ok();
+            auto_pair_items.push((bit, item));
+        }
+        edit.append(&auto_pair_sub).ok();
+
         let render = Submenu::new("Render", true);
         render.append(&MenuItem::with_id("live", "Live", true, None)).ok();
         render.append(&MenuItem::with_id("editor", "Editor", true, None)).ok();
         render.append(&MenuItem::with_id("view", "View", true, None)).ok();
         render.append(&PredefinedMenuItem::separator()).ok();
-        render.append(&MenuItem::with_id("eval", "Evaluate", true, Some(Accelerator::new(Some(Modifiers::CONTROL), Code::Enter)))).ok();
+        render.append(&MenuItem::with_id("eval", "Evaluate", true, Some(Accelerator::new(Some(Modifiers::CONTROL), Code::KeyE)))).ok();
 
         let view = Submenu::new("View", true);
         view.append(&MenuItem::with_id("zoom_in", "Zoom In", true, Some(Accelerator::new(Some(Modifiers::CONTROL), Code::Equal)))).ok();
@@ -78,7 +105,13 @@ impl AppMenu {
         menu.append(&render).ok();
         menu.append(&view).ok();
 
-        Self { menu }
+        Self { menu, auto_pair_items }
+    }
+
+    pub fn set_auto_pair_check(&self, bit: u32, checked: bool) {
+        for (b, item) in &self.auto_pair_items {
+            if *b == bit { item.set_checked(checked); }
+        }
     }
 
     pub fn poll() -> Option<MenuAction> {
@@ -104,6 +137,12 @@ impl AppMenu {
                 "find" => Some(MenuAction::Find),
                 "settings" => Some(MenuAction::Settings),
                 "export_crate" => Some(MenuAction::ExportCrate),
+                "ap_paren"    => Some(MenuAction::ToggleAutoPair(AP_PAREN)),
+                "ap_bracket"  => Some(MenuAction::ToggleAutoPair(AP_BRACKET)),
+                "ap_brace"    => Some(MenuAction::ToggleAutoPair(AP_BRACE)),
+                "ap_single"   => Some(MenuAction::ToggleAutoPair(AP_SINGLE)),
+                "ap_double"   => Some(MenuAction::ToggleAutoPair(AP_DOUBLE)),
+                "ap_backtick" => Some(MenuAction::ToggleAutoPair(AP_BACKTICK)),
                 _ => None,
             }
         })
