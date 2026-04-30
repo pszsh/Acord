@@ -149,7 +149,7 @@ build_macos() {
     local app="$stage/Acord.app"
     rm -rf "$stage"
     mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-    cp "$ROOT/Info.plist" "$app/Contents/Info.plist"
+    cp "$ROOT/macos/Info.plist" "$app/Contents/Info.plist"
     [ -f "$ROOT/build/AppIcon.icns" ] && cp "$ROOT/build/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
 
     local sdk
@@ -164,7 +164,7 @@ build_macos() {
         -framework QuartzCore -framework CoreGraphics -framework CoreFoundation \
         -O \
         -o "$app/Contents/MacOS/Acord" \
-        "$ROOT"/src/*.swift
+        "$ROOT"/macos/src/*.swift
 
     codesign --force --sign - "$app"
     zip_target "macos-${arch}" "$app"

@@ -8,6 +8,14 @@ use iced_wgpu::core::{
 };
 use iced_wgpu::Engine;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
+#[cfg(target_os = "macos")]
+use raw_window_handle::{AppKitDisplayHandle, AppKitWindowHandle};
+#[cfg(target_os = "windows")]
+use raw_window_handle::{Win32WindowHandle, WindowsDisplayHandle};
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use std::ptr::NonNull;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use std::os::raw::c_void;
 
 use crate::palette;
 use super::state::{BrowserMessage, BrowserState};
@@ -258,5 +266,45 @@ pub fn take_pending_open(handle: &mut BrowserHandle) -> Option<PathBuf> {
 
 pub fn refresh(handle: &mut BrowserHandle) {
     handle.state.refresh();
+    handle.needs_redraw = true;
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub fn create_from_native(
+    native_handle: *mut c_void,
+    width: f32,
+    height: f32,
+    scale: f32,
+    notes_dir: PathBuf,
+) -> Option<BrowserHandle> {
+    let ptr = NonNull::new(native_handle)?;
+
+    #[cfg(target_os = "macos")]
+    let (raw_window, raw_display) = (
+        RawWindowHandle::AppKit(AppKitWindowHandle::new(ptr)),
+        RawDisplayHandle::AppKit(AppKitDisplayHandle::new()),
+    );
+    #[cfg(target_os = "windows")]
+    let (raw_window, raw_display) = {
+        let wh = Win32WindowHandle::new(std::num::NonZero::new(ptr.as_ptr() as isize).unwrap());
+        (
+            RawWindowHandle::Win32(wh),
+            RawDisplayHandle::Windows(WindowsDisplayHandle::new()),
+        )
+    };
+
+    create(raw_display, raw_window, width, height, scale, notes_dir)
+}
+
+pub fn push_key_native(
+    handle: &mut BrowserHandle,
+    keycode: u32,
+    modifier_flags: u32,
+    pressed: bool,
+    text: Option<&str>,
+) {
+    for ev in crate::bridge::build_key_events(keycode, modifier_flags, pressed, text) {
+        handle.events.push(ev);
+    }
     handle.needs_redraw = true;
 }

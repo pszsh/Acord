@@ -32,11 +32,11 @@ lipo -create \
 # TODO: regenerate AppIcon.icns from assets/Acord.svg here (see build.sh).
 
 mkdir -p "$MACOS" "$RESOURCES"
-cp "$ROOT/Info.plist" "$CONTENTS/Info.plist"
+cp "$ROOT/macos/Info.plist" "$CONTENTS/Info.plist"
 [ -f "$BUILD/AppIcon.icns" ] && cp "$BUILD/AppIcon.icns" "$RESOURCES/AppIcon.icns"
 
 echo "Compiling Swift (Universal)..."
-SWIFT_FILES=("$ROOT"/src/*.swift)
+SWIFT_FILES=("$ROOT"/macos/src/*.swift)
 RUST_INCLUDES=(-import-objc-header "$ROOT/viewport/include/acord.h" -L "$ROOT/target/universal" -lacord_viewport)
 
 swiftc -target arm64-apple-macosx14.0 -sdk "$SDK" "${RUST_INCLUDES[@]}" \

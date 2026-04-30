@@ -275,4 +275,23 @@ class IcedViewportView: NSView {
         guard let h = viewportHandle else { return 0 }
         return viewport_render_mode(h)
     }
+
+    func setSettingsView(themeMode: String, lineIndicator: String, gutterRainbow: Bool, autoSaveDir: String) {
+        guard let h = viewportHandle else { return }
+        themeMode.withCString { t in
+            lineIndicator.withCString { l in
+                autoSaveDir.withCString { d in
+                    viewport_set_settings_view(h, t, l, gutterRainbow, d)
+                }
+            }
+        }
+    }
+
+    func takeShellAction() -> String? {
+        guard let h = viewportHandle else { return nil }
+        guard let cstr = viewport_take_shell_action(h) else { return nil }
+        let s = String(cString: cstr)
+        viewport_free_string(cstr)
+        return s
+    }
 }

@@ -58,7 +58,7 @@ if [ -f "$SVG" ]; then
 fi
 
 mkdir -p "$MACOS" "$RESOURCES"
-cp "$ROOT/Info.plist" "$CONTENTS/Info.plist"
+cp "$ROOT/macos/Info.plist" "$CONTENTS/Info.plist"
 [ -f "$BUILD/AppIcon.icns" ] && cp "$BUILD/AppIcon.icns" "$RESOURCES/AppIcon.icns"
 
 echo "Compiling Swift (release)..."
@@ -75,7 +75,7 @@ swiftc \
     -framework CoreFoundation \
     -O \
     -o "$MACOS/Acord" \
-    "$ROOT"/src/*.swift
+    "$ROOT"/macos/src/*.swift
 
 codesign --force --sign - "$APP"
 

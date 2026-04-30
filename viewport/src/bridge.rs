@@ -42,14 +42,21 @@ pub fn push_key_event(
     pressed: bool,
     text: Option<&str>,
 ) {
-    let modifiers = decode_modifiers(modifier_flags);
+    for ev in build_key_events(keycode, modifier_flags, pressed, text) {
+        handle.events.push(ev);
+    }
+}
 
-    // Always emit a ModifiersChanged BEFORE the key event so handle.rs's
-    // state.mods stays current. Without this, holding Cmd silently and
-    // then clicking would leave state.mods stale (the click event carries
-    // no modifier info), and click handlers reading self.mods would see
-    // the wrong state. Idempotent — handle.rs only stores the latest.
-    handle.events.push(Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)));
+pub fn build_key_events(
+    keycode: u32,
+    modifier_flags: u32,
+    pressed: bool,
+    text: Option<&str>,
+) -> Vec<Event> {
+    let modifiers = decode_modifiers(modifier_flags);
+    let mut out = Vec::with_capacity(2);
+
+    out.push(Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)));
 
     let physical = key::Physical::Unidentified(key::NativeCode::MacOS(keycode as u16));
 
@@ -70,7 +77,7 @@ pub fn push_key_event(
     };
 
     if pressed {
-        handle.events.push(Event::Keyboard(keyboard::Event::KeyPressed {
+        out.push(Event::Keyboard(keyboard::Event::KeyPressed {
             key: logical.clone(),
             modified_key: logical,
             physical_key: physical,
@@ -80,7 +87,7 @@ pub fn push_key_event(
             repeat: false,
         }));
     } else {
-        handle.events.push(Event::Keyboard(keyboard::Event::KeyReleased {
+        out.push(Event::Keyboard(keyboard::Event::KeyReleased {
             key: logical.clone(),
             modified_key: logical,
             physical_key: physical,
@@ -88,6 +95,7 @@ pub fn push_key_event(
             modifiers,
         }));
     }
+    out
 }
 
 fn keycode_to_named(keycode: u32) -> Option<keyboard::key::Named> {

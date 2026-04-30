@@ -321,9 +321,61 @@ pub extern "C" fn viewport_send_command(handle: *mut ViewportHandle, command: u3
         11 => h.state.update(editor::Message::SetRenderMode(editor::RenderMode::Live)),
         12 => h.state.update(editor::Message::SetRenderMode(editor::RenderMode::Editor)),
         13 => h.state.update(editor::Message::SetRenderMode(editor::RenderMode::View)),
+        16 => h.state.settings_open = !h.state.settings_open,
         _ => return,
     };
     h.needs_redraw = true;
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn viewport_set_settings_view(
+    handle: *mut ViewportHandle,
+    theme_mode: *const c_char,
+    line_indicator: *const c_char,
+    gutter_rainbow: bool,
+    auto_save_dir: *const c_char,
+) {
+    let h = match unsafe { handle.as_mut() } {
+        Some(h) => h,
+        None => return,
+    };
+    let read = |p: *const c_char| -> String {
+        if p.is_null() { return String::new(); }
+        unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
+    };
+    h.state.settings_view = editor::SettingsView {
+        theme_mode: read(theme_mode),
+        line_indicator: read(line_indicator),
+        gutter_rainbow,
+        auto_save_dir: read(auto_save_dir),
+    };
+    h.needs_redraw = true;
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn viewport_take_shell_action(handle: *mut ViewportHandle) -> *mut c_char {
+    let h = match unsafe { handle.as_mut() } {
+        Some(h) => h,
+        None => return std::ptr::null_mut(),
+    };
+    let Some(action) = h.state.take_pending_shell_action() else {
+        return std::ptr::null_mut();
+    };
+    let s = match action {
+        editor::ShellAction::NewNote => "new_note".to_string(),
+        editor::ShellAction::Open => "open".to_string(),
+        editor::ShellAction::Save => "save".to_string(),
+        editor::ShellAction::SaveAs => "save_as".to_string(),
+        editor::ShellAction::Quit => "quit".to_string(),
+        editor::ShellAction::Settings => "settings".to_string(),
+        editor::ShellAction::ExportCrate => "export_crate".to_string(),
+        editor::ShellAction::ToggleBrowser => "toggle_browser".to_string(),
+        editor::ShellAction::SetThemeMode(v) => format!("set_theme_mode:{}", v),
+        editor::ShellAction::SetLineIndicator(v) => format!("set_line_indicator:{}", v),
+        editor::ShellAction::SetGutterRainbow(b) => format!("set_gutter_rainbow:{}", b),
+        editor::ShellAction::PickAutoSaveDir => "pick_auto_save_dir".to_string(),
+    };
+    CString::new(s).map(|c| c.into_raw()).unwrap_or(std::ptr::null_mut())
 }
 
 /// Export the note as a standalone Rust crate at `out_dir/name/`. Returns
@@ -358,6 +410,99 @@ pub extern "C" fn viewport_export_crate(
         }
         Err(_) => std::ptr::null_mut(),
     }
+}
+
+use browser::BrowserHandle;
+
+#[unsafe(no_mangle)]
+pub extern "C" fn browser_create(
+    nsview: *mut c_void,
+    width: f32,
+    height: f32,
+    scale: f32,
+    notes_dir: *const c_char,
+) -> *mut BrowserHandle {
+    if nsview.is_null() || notes_dir.is_null() { return std::ptr::null_mut(); }
+    let dir = match unsafe { CStr::from_ptr(notes_dir) }.to_str() {
+        Ok(s) => std::path::PathBuf::from(s),
+        Err(_) => return std::ptr::null_mut(),
+    };
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        match browser::handle::create_from_native(nsview, width, height, scale, dir) {
+            Some(h) => Box::into_raw(Box::new(h)),
+            None => std::ptr::null_mut(),
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = (width, height, scale, dir);
+        std::ptr::null_mut()
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn browser_destroy(handle: *mut BrowserHandle) {
+    if handle.is_null() { return; }
+    unsafe { drop(Box::from_raw(handle)); }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn browser_render(handle: *mut BrowserHandle) {
+    let h = match unsafe { handle.as_mut() } { Some(h) => h, None => return };
+    browser::handle::render(h);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn browser_resize(handle: *mut BrowserHandle, width: f32, height: f32, scale: f32) {
+    let h = match unsafe { handle.as_mut() } { Some(h) => h, None => return };
+    browser::handle::resize(h, width, height, scale);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn browser_mouse_event(handle: *mut BrowserHandle, x: f32, y: f32, button: u8, pressed: bool) {
+    let h = match unsafe { handle.as_mut() } { Some(h) => h, None => return };
+    browser::handle::push_mouse_move(h, x, y);
+    if button != 255 {
+        browser::handle::push_mouse_button(h, button, pressed);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn browser_scroll_event(handle: *mut BrowserHandle, delta_x: f32, delta_y: f32) {
+    let h = match unsafe { handle.as_mut() } { Some(h) => h, None => return };
+    browser::handle::push_scroll(h, delta_x, delta_y);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn browser_key_event(
+    handle: *mut BrowserHandle,
+    key: u32,
+    modifiers: u32,
+    pressed: bool,
+    text: *const c_char,
+) {
+    let h = match unsafe { handle.as_mut() } { Some(h) => h, None => return };
+    let text_str = if text.is_null() {
+        None
+    } else {
+        Some(unsafe { CStr::from_ptr(text) }.to_string_lossy())
+    };
+    browser::handle::push_key_native(h, key, modifiers, pressed, text_str.as_deref());
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn browser_take_pending_open(handle: *mut BrowserHandle) -> *mut c_char {
+    let h = match unsafe { handle.as_mut() } { Some(h) => h, None => return std::ptr::null_mut() };
+    let Some(path) = browser::handle::take_pending_open(h) else { return std::ptr::null_mut() };
+    let s = path.to_string_lossy().into_owned();
+    CString::new(s).map(|c| c.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn browser_refresh(handle: *mut BrowserHandle) {
+    let h = match unsafe { handle.as_mut() } { Some(h) => h, None => return };
+    browser::handle::refresh(h);
 }
 
 #[unsafe(no_mangle)]

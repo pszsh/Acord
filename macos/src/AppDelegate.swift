@@ -7,6 +7,19 @@ extension Notification.Name {
     static let focusEditor = Notification.Name("focusEditor")
     static let focusTitle = Notification.Name("focusTitle")
     static let newNoteSeeded = Notification.Name("newNoteSeeded")
+    static let settingsChanged = Notification.Name("settingsChanged")
+}
+
+func applyThemeAppearance() {
+    let mode = ConfigManager.shared.themeMode
+    switch mode {
+    case "dark":
+        NSApp.appearance = NSAppearance(named: .darkAqua)
+    case "light":
+        NSApp.appearance = NSAppearance(named: .aqua)
+    default:
+        NSApp.appearance = nil
+    }
 }
 
 class WindowController {
@@ -75,6 +88,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         observeDocumentText()
         syncThemeToViewport()
         syncGutterPrefsToViewport()
+        syncSettingsToViewport()
         startAutosaveTimer()
 
         DocumentBrowserController.shared = DocumentBrowserController(appState: appState)
@@ -428,11 +442,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     @objc private func saveNote() {
         syncTextFromViewport()
-        if appState.currentFileURL != nil {
-            appState.saveNote()
-        } else {
-            saveNoteAs()
-        }
+        appState.bindAutoSaveURL()
+        appState.saveNote()
     }
 
     @objc private func saveNoteAs() {
@@ -628,14 +639,71 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     @objc private func openSettings() {
-        SettingsWindowController.show()
+        syncSettingsToViewport()
+        viewport?.sendCommand(16)
     }
 
     @objc private func settingsDidChange() {
         window.backgroundColor = Theme.current.base
         syncThemeToViewport()
         syncGutterPrefsToViewport()
+        syncSettingsToViewport()
         window.contentView?.needsDisplay = true
+    }
+
+    private func syncSettingsToViewport() {
+        viewport?.setSettingsView(
+            themeMode: ConfigManager.shared.themeMode,
+            lineIndicator: ConfigManager.shared.lineIndicatorMode,
+            gutterRainbow: ConfigManager.shared.gutterRainbow,
+            autoSaveDir: ConfigManager.shared.autoSaveDirectory
+        )
+    }
+
+    private func drainShellActions() {
+        guard let vp = viewport else { return }
+        while let raw = vp.takeShellAction() {
+            let parts = raw.split(separator: ":", maxSplits: 1).map(String.init)
+            let kind = parts[0]
+            let value = parts.count > 1 ? parts[1] : ""
+            switch kind {
+            case "new_note": newNote()
+            case "open": openNote()
+            case "save": saveNote()
+            case "save_as": saveNoteAs()
+            case "quit": NSApp.terminate(nil)
+            case "settings": break
+            case "export_crate": exportCrate()
+            case "toggle_browser": toggleBrowser()
+            case "set_theme_mode":
+                ConfigManager.shared.themeMode = value
+                NotificationCenter.default.post(name: .settingsChanged, object: nil)
+            case "set_line_indicator":
+                ConfigManager.shared.lineIndicatorMode = value
+                NotificationCenter.default.post(name: .settingsChanged, object: nil)
+            case "set_gutter_rainbow":
+                ConfigManager.shared.gutterRainbow = (value == "true")
+                NotificationCenter.default.post(name: .settingsChanged, object: nil)
+            case "pick_auto_save_dir":
+                pickAutoSaveDirectory()
+            default:
+                break
+            }
+        }
+    }
+
+    private func pickAutoSaveDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: ConfigManager.shared.autoSaveDirectory)
+        panel.beginSheetModal(for: window) { response in
+            guard response == .OK, let url = panel.url else { return }
+            ConfigManager.shared.autoSaveDirectory = url.path
+            NotificationCenter.default.post(name: .settingsChanged, object: nil)
+        }
     }
 
     private func syncThemeToViewport() {
@@ -663,19 +731,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     @objc private func zoomIn() {
-        if let browser = DocumentBrowserController.shared, browser.window.isKeyWindow {
-            browser.browserState.scaleUp()
-            return
-        }
         ConfigManager.shared.zoomLevel += 1
         NotificationCenter.default.post(name: .settingsChanged, object: nil)
     }
 
     @objc private func zoomOut() {
-        if let browser = DocumentBrowserController.shared, browser.window.isKeyWindow {
-            browser.browserState.scaleDown()
-            return
-        }
         let current = ConfigManager.shared.zoomLevel
         if 11 + current > 8 {
             ConfigManager.shared.zoomLevel -= 1
@@ -763,6 +823,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private func startAutosaveTimer() {
         autosaveTimer?.invalidate()
         autosaveTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            self?.drainShellActions()
             self?.persistViewportToNotesDir()
         }
     }

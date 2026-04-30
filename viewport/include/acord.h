@@ -39,6 +39,11 @@
 
 #define USER_IDENT_HOP 3
 
+/**
+ * Owns the browser window's wgpu surface, iced renderer, and BrowserState.
+ */
+typedef struct BrowserHandle BrowserHandle;
+
 typedef struct TextPos TextPos;
 
 typedef struct ViewportHandle ViewportHandle;
@@ -91,6 +96,14 @@ uint32_t viewport_get_auto_pair_flags(void);
 
 void viewport_send_command(struct ViewportHandle *handle, uint32_t command);
 
+void viewport_set_settings_view(struct ViewportHandle *handle,
+                                const char *theme_mode,
+                                const char *line_indicator,
+                                bool gutter_rainbow,
+                                const char *auto_save_dir);
+
+char *viewport_take_shell_action(struct ViewportHandle *handle);
+
 /**
  * Export the note as a standalone Rust crate at `out_dir/name/`. Returns
  * a heap-allocated C string on success (the absolute path of the created
@@ -98,6 +111,36 @@ void viewport_send_command(struct ViewportHandle *handle, uint32_t command);
  * `viewport_free_string`.
  */
 char *viewport_export_crate(struct ViewportHandle *handle, const char *out_dir, const char *name);
+
+struct BrowserHandle *browser_create(void *nsview,
+                                     float width,
+                                     float height,
+                                     float scale,
+                                     const char *notes_dir);
+
+void browser_destroy(struct BrowserHandle *handle);
+
+void browser_render(struct BrowserHandle *handle);
+
+void browser_resize(struct BrowserHandle *handle, float width, float height, float scale);
+
+void browser_mouse_event(struct BrowserHandle *handle,
+                         float x,
+                         float y,
+                         uint8_t button,
+                         bool pressed);
+
+void browser_scroll_event(struct BrowserHandle *handle, float delta_x, float delta_y);
+
+void browser_key_event(struct BrowserHandle *handle,
+                       uint32_t key,
+                       uint32_t modifiers,
+                       bool pressed,
+                       const char *text);
+
+char *browser_take_pending_open(struct BrowserHandle *handle);
+
+void browser_refresh(struct BrowserHandle *handle);
 
 uint32_t viewport_render_mode(struct ViewportHandle *handle);
 

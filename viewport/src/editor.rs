@@ -3382,7 +3382,6 @@ impl EditorState {
             .height(Length::Fill)
             .into();
 
-        #[cfg(any(target_os = "linux", target_os = "windows"))]
         if self.settings_open {
             return iced_widget::stack![body, self.settings_panel()].into();
         }
@@ -4208,7 +4207,6 @@ impl EditorState {
         .into()
     }
 
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
     fn settings_panel(&self) -> Element<'_, Message, Theme, iced_wgpu::Renderer> {
         let p = palette::current();
         let f = self.font_size;
@@ -4241,9 +4239,9 @@ impl EditorState {
             "Line indicator",
             label_size,
             &[
-                ("Off",  "off"),
-                ("Line", "line"),
-                ("On",   "on"),
+                ("On",  "on"),
+                ("Off", "off"),
+                ("Vim", "vim"),
             ],
             &self.settings_view.line_indicator,
             |v| Message::Shell(ShellAction::SetLineIndicator(v.to_string())),
@@ -4337,7 +4335,6 @@ impl EditorState {
             .into()
     }
 
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
     fn settings_segment_row<'a>(
         &'a self,
         label: &str,

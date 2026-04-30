@@ -272,6 +272,13 @@ class AppState: ObservableObject {
         return url
     }
 
+    func bindAutoSaveURL() {
+        if currentFileURL != nil { return }
+        let url = resolveAutoSaveURL(noteID: currentNoteID, text: documentText)
+        currentFileURL = url
+        currentFileFormat = .markdown
+    }
+
     /// Background-safe atomic write. No path resolution here — the URL was
     /// resolved on the main thread before dispatch.
     private static func writeAutoSaveFile(at url: URL, text: String) {
