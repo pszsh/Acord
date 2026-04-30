@@ -3,7 +3,7 @@
 
 mod app;
 mod config;
-mod menu;
+mod shortcuts;
 
 fn main() {
     let event_loop = winit::event_loop::EventLoop::new().expect("event loop");

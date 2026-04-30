@@ -186,7 +186,7 @@ pub enum MenuCategory {
     View,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShellAction {
     NewNote,
     Open,
@@ -196,9 +196,13 @@ pub enum ShellAction {
     Settings,
     ExportCrate,
     ToggleBrowser,
+    SetThemeMode(String),
+    SetLineIndicator(String),
+    SetGutterRainbow(bool),
+    PickAutoSaveDir,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 const MENU_CATS: [(MenuCategory, &'static str); 4] = [
     (MenuCategory::File,   "File"),
     (MenuCategory::Edit,   "Edit"),
@@ -206,7 +210,7 @@ const MENU_CATS: [(MenuCategory, &'static str); 4] = [
     (MenuCategory::View,   "View"),
 ];
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn cat_btn_width(label: &str, char_w: f32, pad_x: f32) -> f32 {
     label.chars().count() as f32 * char_w + pad_x * 2.0
 }
@@ -430,6 +434,27 @@ pub struct EditorState {
 
     pub menu_open: Option<MenuCategory>,
     pub pending_shell_action: Option<ShellAction>,
+    pub settings_open: bool,
+    pub settings_view: SettingsView,
+}
+
+#[derive(Debug, Clone)]
+pub struct SettingsView {
+    pub theme_mode: String,
+    pub line_indicator: String,
+    pub gutter_rainbow: bool,
+    pub auto_save_dir: String,
+}
+
+impl Default for SettingsView {
+    fn default() -> Self {
+        Self {
+            theme_mode: "auto".to_string(),
+            line_indicator: "on".to_string(),
+            gutter_rainbow: true,
+            auto_save_dir: String::new(),
+        }
+    }
 }
 
 /// per-eval table name to id bookkeeping
@@ -525,6 +550,8 @@ impl EditorState {
             prev_cursor_line: 0,
             menu_open: None,
             pending_shell_action: None,
+            settings_open: false,
+            settings_view: SettingsView::default(),
         }
     }
 
@@ -3091,8 +3118,15 @@ impl EditorState {
                 self.menu_open = None;
             }
             Message::Shell(action) => {
-                self.pending_shell_action = Some(action);
                 self.menu_open = None;
+                match action {
+                    ShellAction::Settings => {
+                        self.settings_open = !self.settings_open;
+                    }
+                    other => {
+                        self.pending_shell_action = Some(other);
+                    }
+                }
             }
             Message::CopyLiteral(text) => {
                 self.pending_clipboard = Some(text);
@@ -3332,7 +3366,7 @@ impl EditorState {
 
         let mut col_items: Vec<Element<'_, Message, Theme, iced_wgpu::Renderer>> = Vec::new();
 
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         col_items.push(self.menu_strip());
 
         col_items.push(main_content);
@@ -3348,7 +3382,12 @@ impl EditorState {
             .height(Length::Fill)
             .into();
 
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        if self.settings_open {
+            return iced_widget::stack![body, self.settings_panel()].into();
+        }
+
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         if let Some(cat) = self.menu_open {
             return iced_widget::stack![body, self.menu_dropdown(cat)].into();
         }
@@ -3364,9 +3403,9 @@ impl EditorState {
             && self.block_at(0).map(|b| b.as_any().is::<TextBlock>()).unwrap_or(false)
             && !has_computed_layers;
 
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         let title_bar_h = 0.0_f32;
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         let title_bar_h = 38.0_f32;
 
         let mut block_elements: Vec<Element<'_, Message, Theme, iced_wgpu::Renderer>> = Vec::new();
@@ -3994,7 +4033,7 @@ impl EditorState {
         .into()
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     fn menu_strip(&self) -> Element<'_, Message, Theme, iced_wgpu::Renderer> {
         let p = palette::current();
         let f = self.font_size;
@@ -4039,7 +4078,7 @@ impl EditorState {
     }
 
     /// returns the dropdown panel for the open category, anchored under its strip button
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     fn menu_dropdown(&self, cat: MenuCategory) -> Element<'_, Message, Theme, iced_wgpu::Renderer> {
         let p = palette::current();
         let f = self.font_size;
@@ -4166,6 +4205,182 @@ impl EditorState {
                 panel,
             ],
         ]
+        .into()
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    fn settings_panel(&self) -> Element<'_, Message, Theme, iced_wgpu::Renderer> {
+        let p = palette::current();
+        let f = self.font_size;
+        let item_pad_x = f * 0.95;
+        let item_pad_y = f * 0.32;
+        let panel_radius = f * 0.30;
+        let label_size = f * 0.92;
+        let title_size = f * 1.05;
+        let row_gap = f * 0.55;
+        let panel_width = f * 28.0;
+
+        let title = iced_widget::text("Settings")
+            .size(title_size)
+            .font(syntax::EDITOR_FONT)
+            .color(p.text);
+
+        let theme_row = self.settings_segment_row(
+            "Theme",
+            label_size,
+            &[
+                ("Auto",  "auto"),
+                ("Light", "light"),
+                ("Dark",  "dark"),
+            ],
+            &self.settings_view.theme_mode,
+            |v| Message::Shell(ShellAction::SetThemeMode(v.to_string())),
+        );
+
+        let line_row = self.settings_segment_row(
+            "Line indicator",
+            label_size,
+            &[
+                ("Off",  "off"),
+                ("Line", "line"),
+                ("On",   "on"),
+            ],
+            &self.settings_view.line_indicator,
+            |v| Message::Shell(ShellAction::SetLineIndicator(v.to_string())),
+        );
+
+        let rainbow_row = self.settings_segment_row(
+            "Gutter rainbow",
+            label_size,
+            &[
+                ("Off", "false"),
+                ("On",  "true"),
+            ],
+            if self.settings_view.gutter_rainbow { "true" } else { "false" },
+            |v| Message::Shell(ShellAction::SetGutterRainbow(v == "true")),
+        );
+
+        let dir_label = iced_widget::text("Auto-save folder")
+            .size(label_size)
+            .font(syntax::EDITOR_FONT)
+            .color(p.text)
+            .width(Length::Fill);
+        let dir_value = iced_widget::text(self.settings_view.auto_save_dir.clone())
+            .size(label_size)
+            .font(syntax::EDITOR_FONT)
+            .color(p.subtext0)
+            .width(Length::Fill);
+        let dir_btn = iced_widget::button(
+            iced_widget::text("Choose…")
+                .size(label_size)
+                .font(syntax::EDITOR_FONT)
+        )
+        .padding(Padding { top: item_pad_y * 0.6, right: item_pad_x * 0.7, bottom: item_pad_y * 0.6, left: item_pad_x * 0.7 })
+        .on_press(Message::Shell(ShellAction::PickAutoSaveDir))
+        .style(context_menu_item_style);
+        let dir_row: Element<'_, Message, Theme, iced_wgpu::Renderer> = iced_widget::column![
+            dir_label,
+            iced_widget::row![dir_value, dir_btn].spacing(f * 0.5),
+        ]
+        .spacing(f * 0.2)
+        .into();
+
+        let close_btn = iced_widget::button(
+            iced_widget::text("Close")
+                .size(label_size)
+                .font(syntax::EDITOR_FONT)
+        )
+        .padding(Padding { top: item_pad_y * 0.6, right: item_pad_x, bottom: item_pad_y * 0.6, left: item_pad_x })
+        .on_press(Message::Shell(ShellAction::Settings))
+        .style(context_menu_item_style);
+
+        let panel = iced_widget::container(
+            iced_widget::column![
+                title,
+                theme_row,
+                line_row,
+                rainbow_row,
+                dir_row,
+                iced_widget::row![
+                    iced_widget::Space::new().width(Length::Fill).height(Length::Shrink),
+                    close_btn,
+                ],
+            ]
+            .spacing(row_gap)
+            .width(Length::Fixed(panel_width))
+        )
+        .padding(Padding { top: f, right: f, bottom: f, left: f })
+        .style(move |_t: &Theme| iced_widget::container::Style {
+            background: Some(Background::Color(p.surface0)),
+            border: Border {
+                color: p.surface1,
+                width: 1.0,
+                radius: panel_radius.into(),
+            },
+            text_color: Some(p.text),
+            shadow: Shadow::default(),
+            snap: false,
+        });
+
+        iced_widget::container(panel)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .style(move |_t: &Theme| iced_widget::container::Style {
+                background: Some(Background::Color(Color { r: 0.0, g: 0.0, b: 0.0, a: 0.4 })),
+                border: Border::default(),
+                text_color: None,
+                shadow: Shadow::default(),
+                snap: false,
+            })
+            .into()
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    fn settings_segment_row<'a>(
+        &'a self,
+        label: &str,
+        label_size: f32,
+        options: &[(&str, &'a str)],
+        current: &str,
+        msg_for: impl Fn(&'a str) -> Message,
+    ) -> Element<'a, Message, Theme, iced_wgpu::Renderer> {
+        let p = palette::current();
+        let f = self.font_size;
+        let mut buttons: Vec<Element<'a, Message, Theme, iced_wgpu::Renderer>> = Vec::new();
+        for (display, value) in options {
+            let active = *value == current;
+            let display = display.to_string();
+            let value = *value;
+            buttons.push(
+                iced_widget::button(
+                    iced_widget::text(display)
+                        .size(label_size)
+                        .font(syntax::EDITOR_FONT)
+                )
+                .padding(Padding { top: f * 0.18, right: f * 0.55, bottom: f * 0.18, left: f * 0.55 })
+                .style(move |_t: &Theme, _s| iced_widget::button::Style {
+                    background: if active { Some(Background::Color(p.surface2)) } else { Some(Background::Color(p.surface1)) },
+                    text_color: if active { p.text } else { p.subtext0 },
+                    border: Border { color: p.surface2, width: 1.0, radius: (f * 0.18).into() },
+                    shadow: Shadow::default(),
+                    snap: false,
+                })
+                .on_press(msg_for(value))
+                .into()
+            );
+        }
+        let label_w = iced_widget::text(label.to_string())
+            .size(label_size)
+            .font(syntax::EDITOR_FONT)
+            .color(p.text)
+            .width(Length::Fill);
+        iced_widget::row![
+            label_w,
+            iced_widget::row(buttons).spacing(f * 0.25),
+        ]
+        .spacing(f)
         .into()
     }
 

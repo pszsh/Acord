@@ -11,7 +11,6 @@ path = "src/main.rs"
 acord-core = { path = "../core" }
 acord-viewport = { path = "../viewport" }
 winit = "0.30"
-muda = "0.16"
 arboard = "3"
 rfd = "0.15"
 raw-window-handle = "0.6"

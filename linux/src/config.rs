@@ -63,18 +63,7 @@ impl Config {
     }
 }
 
-/// XDG-friendly config dir with `~/.acord` fallback for parity with the
-/// Windows shell. `$XDG_CONFIG_HOME/acord` if set, else `~/.config/acord`,
-/// else `~/.acord`.
 fn config_dir() -> PathBuf {
-    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        if !xdg.is_empty() {
-            return PathBuf::from(xdg).join("acord");
-        }
-    }
-    if let Some(cfg) = dirs::config_dir() {
-        return cfg.join("acord");
-    }
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".acord")

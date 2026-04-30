@@ -22,13 +22,13 @@ use acord_viewport::{
 use acord_viewport::browser::{self, BrowserHandle};
 
 use crate::config::Config;
-use crate::menu::{AppMenu, MenuAction};
+use crate::shortcuts::{match_shortcut, MenuAction};
+use acord_viewport::editor::ShellAction;
 
 pub struct App {
     window: Option<Window>,
     handle: *mut ViewportHandle,
     config: Config,
-    _menu: Option<AppMenu>,
     cursor_pos: PhysicalPosition<f64>,
     scale: f32,
     modifiers: ModifiersState,
@@ -48,7 +48,6 @@ impl App {
             window: None,
             handle: std::ptr::null_mut(),
             config: Config::load(),
-            _menu: None,
             cursor_pos: PhysicalPosition::new(0.0, 0.0),
             scale: 1.0,
             modifiers: ModifiersState::empty(),
@@ -62,12 +61,12 @@ impl App {
         }
     }
 
-    fn sync_settings(&self) {
+    fn sync_settings(&mut self) {
         if self.handle.is_null() { return; }
         let theme = match self.config.theme_mode() {
             "dark" => "kicad",
             "light" => "latte",
-            _ => "kicad", // Windows: default dark. No NSAppearance auto-detect.
+            _ => "kicad",
         };
         let c_theme = CString::new(theme).unwrap();
         viewport_set_theme(self.handle, c_theme.as_ptr());
@@ -76,6 +75,14 @@ impl App {
         viewport_set_line_indicator(self.handle, ind.as_ptr());
         viewport_set_gutter_rainbow(self.handle, self.config.gutter_rainbow());
         viewport_set_auto_pair_flags(self.handle, self.config.auto_pair_flags());
+
+        let view = acord_viewport::editor::SettingsView {
+            theme_mode: self.config.theme_mode().to_string(),
+            line_indicator: self.config.line_indicator().to_string(),
+            gutter_rainbow: self.config.gutter_rainbow(),
+            auto_save_dir: self.config.notes_dir().to_string_lossy().into_owned(),
+        };
+        unsafe { (*self.handle).state.settings_view = view; }
     }
 
     fn dispatch_menu(&mut self, action: MenuAction, event_loop: &ActiveEventLoop) {
@@ -97,26 +104,47 @@ impl App {
             MenuAction::Save => self.save_file(),
             MenuAction::SaveAs => self.save_file_as(),
             MenuAction::NewNote => self.new_note(),
-            MenuAction::Settings => {
-                // Open config file in the default editor.
-                let cfg = dirs::home_dir()
-                    .unwrap_or_default()
-                    .join(".acord")
-                    .join("config.json");
-                let _ = std::process::Command::new("notepad").arg(&cfg).spawn();
+            MenuAction::Settings => unsafe {
+                (*self.handle).state.settings_open = !(*self.handle).state.settings_open;
+            },
+            MenuAction::ExportCrate => {}
+            MenuAction::ToggleBrowser => self.toggle_browser(event_loop),
+        }
+    }
+
+    fn drain_shell_actions(&mut self, event_loop: &ActiveEventLoop) {
+        if self.handle.is_null() { return; }
+        let action = unsafe { (*self.handle).state.take_pending_shell_action() };
+        let Some(action) = action else { return };
+        match action {
+            ShellAction::NewNote => self.new_note(),
+            ShellAction::Open => self.open_file(),
+            ShellAction::Save => self.save_file(),
+            ShellAction::SaveAs => self.save_file_as(),
+            ShellAction::Quit => event_loop.exit(),
+            ShellAction::Settings => {}
+            ShellAction::ExportCrate => {}
+            ShellAction::ToggleBrowser => self.toggle_browser(event_loop),
+            ShellAction::SetThemeMode(v) => {
+                self.config.set("themeMode", &v);
+                self.sync_settings();
             }
-            MenuAction::Undo => { /* TODO */ },
-            MenuAction::Redo => { /* TODO */ },
-            MenuAction::ExportCrate => { /* TODO */ },
-            MenuAction::ToggleAutoPair(bit) => {
-                let new_flags = self.config.auto_pair_flags() ^ bit;
-                self.config.set_auto_pair_flags(new_flags);
-                viewport_set_auto_pair_flags(self.handle, new_flags);
-                if let Some(menu) = &self._menu {
-                    menu.set_auto_pair_check(bit, (new_flags & bit) != 0);
+            ShellAction::SetLineIndicator(v) => {
+                self.config.set("lineIndicatorMode", &v);
+                self.sync_settings();
+            }
+            ShellAction::SetGutterRainbow(b) => {
+                self.config.set("gutterRainbow", if b { "true" } else { "false" });
+                self.sync_settings();
+            }
+            ShellAction::PickAutoSaveDir => {
+                let dialog = rfd::FileDialog::new()
+                    .set_directory(self.config.notes_dir());
+                if let Some(path) = dialog.pick_folder() {
+                    self.config.set("autoSaveDirectory", &path.to_string_lossy());
+                    self.sync_settings();
                 }
             }
-            MenuAction::ToggleBrowser => self.toggle_browser(event_loop),
         }
     }
 
@@ -217,17 +245,25 @@ impl App {
     }
 
     fn save_file(&mut self) {
-        match self.current_file.clone() {
-            Some(path) => self.write_to(&path),
-            None => self.save_file_as(),
+        if let Some(path) = self.current_file.clone() {
+            self.write_to(&path);
+            return;
         }
+        let notes_dir = self.config.notes_dir();
+        let _ = std::fs::create_dir_all(&notes_dir);
+        let path = notes_dir.join(format!("{}.md", self.derive_default_filename()));
+        self.write_to(&path);
+        self.current_file = Some(path);
     }
 
     fn save_file_as(&mut self) {
+        let notes_dir = self.config.notes_dir();
+        let _ = std::fs::create_dir_all(&notes_dir);
         let dialog = rfd::FileDialog::new()
             .add_filter("Markdown", &["md"])
             .add_filter("All Files", &["*"])
-            .set_file_name("note.md");
+            .set_directory(&notes_dir)
+            .set_file_name(format!("{}.md", self.derive_default_filename()));
         if let Some(path) = dialog.save_file() {
             self.write_to(&path);
             self.current_file = Some(path);
@@ -243,6 +279,31 @@ impl App {
         viewport_free_string(text_ptr);
         if std::fs::write(path, &text).is_ok() {
             self.last_autosaved_hash = Some(text_hash(&text));
+        }
+    }
+
+    fn derive_default_filename(&self) -> String {
+        let text_ptr = viewport_get_text(self.handle);
+        let text = if text_ptr.is_null() {
+            String::new()
+        } else {
+            let s = unsafe { std::ffi::CStr::from_ptr(text_ptr) }
+                .to_string_lossy()
+                .into_owned();
+            viewport_free_string(text_ptr);
+            s
+        };
+        let title = text.lines().next().unwrap_or("").trim_start();
+        let title = title.trim_start_matches('#').trim();
+        let cleaned: String = title
+            .chars()
+            .filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+            .collect();
+        let cleaned = cleaned.trim();
+        if cleaned.is_empty() {
+            "Untitled".to_string()
+        } else {
+            cleaned.chars().take(60).collect()
         }
     }
 
@@ -416,19 +477,9 @@ impl ApplicationHandler for App {
 
         self.handle = viewport_create(hwnd, w, h, self.scale);
         self.sync_settings();
-
-        let app_menu = AppMenu::new(self.config.auto_pair_flags());
-        #[cfg(target_os = "windows")]
-        {
-            if let raw_window_handle::RawWindowHandle::Win32(h) = raw {
-                let theme = match self.config.theme_mode() {
-                    "light" => muda::MenuTheme::Light,
-                    _ => muda::MenuTheme::Dark,
-                };
-                unsafe { app_menu.menu.init_for_hwnd_with_theme(h.hwnd.get(), theme).ok(); }
-            }
-        }
-        self._menu = Some(app_menu);
+        viewport_send_command(self.handle, 12);
+        let stub = CString::new("# ").unwrap();
+        viewport_set_text(self.handle, stub.as_ptr());
         self.window = Some(window);
     }
 
@@ -500,6 +551,14 @@ impl ApplicationHandler for App {
 
             WindowEvent::KeyboardInput { event, .. } => {
                 let pressed = event.state == ElementState::Pressed;
+
+                if pressed {
+                    if let Some(action) = match_shortcut(self.modifiers, &event.logical_key) {
+                        self.dispatch_menu(action, event_loop);
+                        return;
+                    }
+                }
+
                 let text_str = event.text.as_ref().map(|s| s.to_string());
                 let text_c = text_str.as_deref()
                     .and_then(|s| CString::new(s).ok());
@@ -534,13 +593,11 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        while let Some(action) = AppMenu::poll() {
-            self.dispatch_menu(action, _event_loop);
-        }
         if self.last_autosave_attempt.elapsed() >= Duration::from_millis(500) {
             self.last_autosave_attempt = Instant::now();
             self.try_autosave();
         }
+        self.drain_shell_actions(_event_loop);
         self.drain_browser_open();
         if let Some(w) = &self.window {
             if !self.handle.is_null() {

@@ -60,7 +60,7 @@ impl App {
         }
     }
 
-    fn sync_settings(&self) {
+    fn sync_settings(&mut self) {
         if self.handle.is_null() { return; }
         let theme = match self.config.theme_mode() {
             "dark" => "kicad",
@@ -74,6 +74,14 @@ impl App {
         viewport_set_line_indicator(self.handle, ind.as_ptr());
         viewport_set_gutter_rainbow(self.handle, self.config.gutter_rainbow());
         viewport_set_auto_pair_flags(self.handle, self.config.auto_pair_flags());
+
+        let view = acord_viewport::editor::SettingsView {
+            theme_mode: self.config.theme_mode().to_string(),
+            line_indicator: self.config.line_indicator().to_string(),
+            gutter_rainbow: self.config.gutter_rainbow(),
+            auto_save_dir: self.config.notes_dir().to_string_lossy().into_owned(),
+        };
+        unsafe { (*self.handle).state.settings_view = view; }
     }
 
     fn dispatch_menu(&mut self, action: MenuAction, event_loop: &ActiveEventLoop) {
@@ -170,9 +178,29 @@ impl App {
             ShellAction::Save => self.save_file(),
             ShellAction::SaveAs => self.save_file_as(),
             ShellAction::Quit => event_loop.exit(),
-            ShellAction::Settings => self.dispatch_menu(MenuAction::Settings, event_loop),
+            ShellAction::Settings => {}
             ShellAction::ExportCrate => self.dispatch_menu(MenuAction::ExportCrate, event_loop),
             ShellAction::ToggleBrowser => self.toggle_browser(event_loop),
+            ShellAction::SetThemeMode(v) => {
+                self.config.set("themeMode", &v);
+                self.sync_settings();
+            }
+            ShellAction::SetLineIndicator(v) => {
+                self.config.set("lineIndicatorMode", &v);
+                self.sync_settings();
+            }
+            ShellAction::SetGutterRainbow(b) => {
+                self.config.set("gutterRainbow", if b { "true" } else { "false" });
+                self.sync_settings();
+            }
+            ShellAction::PickAutoSaveDir => {
+                let dialog = rfd::FileDialog::new()
+                    .set_directory(self.config.notes_dir());
+                if let Some(path) = dialog.pick_folder() {
+                    self.config.set("autoSaveDirectory", &path.to_string_lossy());
+                    self.sync_settings();
+                }
+            }
         }
     }
 
@@ -294,10 +322,15 @@ impl App {
     }
 
     fn save_file(&mut self) {
-        match self.current_file.clone() {
-            Some(path) => self.write_to(&path),
-            None => self.save_file_as(),
+        if let Some(path) = self.current_file.clone() {
+            self.write_to(&path);
+            return;
         }
+        let notes_dir = self.config.notes_dir();
+        let _ = std::fs::create_dir_all(&notes_dir);
+        let path = notes_dir.join(format!("{}.md", self.derive_default_filename()));
+        self.write_to(&path);
+        self.current_file = Some(path);
     }
 
     fn save_file_as(&mut self) {
@@ -307,7 +340,7 @@ impl App {
             .add_filter("Markdown", &["md"])
             .add_filter("All Files", &["*"])
             .set_directory(&notes_dir)
-            .set_file_name("note.md");
+            .set_file_name(format!("{}.md", self.derive_default_filename()));
         if let Some(path) = dialog.save_file() {
             self.write_to(&path);
             self.current_file = Some(path);
@@ -323,6 +356,31 @@ impl App {
         viewport_free_string(text_ptr);
         if std::fs::write(path, &text).is_ok() {
             self.last_autosaved_hash = Some(text_hash(&text));
+        }
+    }
+
+    fn derive_default_filename(&self) -> String {
+        let text_ptr = viewport_get_text(self.handle);
+        let text = if text_ptr.is_null() {
+            String::new()
+        } else {
+            let s = unsafe { std::ffi::CStr::from_ptr(text_ptr) }
+                .to_string_lossy()
+                .into_owned();
+            viewport_free_string(text_ptr);
+            s
+        };
+        let title = text.lines().next().unwrap_or("").trim_start();
+        let title = title.trim_start_matches('#').trim();
+        let cleaned: String = title
+            .chars()
+            .filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+            .collect();
+        let cleaned = cleaned.trim();
+        if cleaned.is_empty() {
+            "Untitled".to_string()
+        } else {
+            cleaned.chars().take(60).collect()
         }
     }
 
