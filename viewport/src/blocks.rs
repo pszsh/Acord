@@ -255,20 +255,24 @@ pub fn reparse_incremental(old_blocks: &mut Vec<BoxedBlock>, text: &str, lang: &
         .collect();
 
     if old_descriptors == new_descriptors {
-        // Same structure: update text content in place for text blocks; align
-        // start_line for all kinds. Cursor preserved (Content not recreated
-        // unless serialized text actually changed).
+        // Same structure: update text content in place for text blocks; for
+        // non-text kinds, rebuild from the span only when the serialized form
+        // actually changed — preserves heading/table/tree internal state on
+        // typical edits while still picking up content swaps (e.g. opening
+        // a note whose first heading lives at the same line as the previous
+        // note's heading).
         for (block, span) in old_blocks.iter_mut().zip(spans.iter()) {
             block.set_start_line(span.start);
+            let block_text = lines[span.start..span.end].join("\n");
             if matches!(span.kind, SpanKind::Text) {
                 if let Some(tb) = block.as_any_mut().downcast_mut::<TextBlock>() {
-                    let block_text = lines[span.start..span.end].join("\n");
-                    let current = tb.content.text();
-                    if current != block_text {
+                    if tb.content.text() != block_text {
                         tb.content =
                             crate::text_widget::Content::with_text(&block_text);
                     }
                 }
+            } else if block.to_md() != block_text {
+                *block = build_block(span, &lines, lang);
             }
         }
         return;
@@ -289,16 +293,20 @@ pub fn reparse_incremental(old_blocks: &mut Vec<BoxedBlock>, text: &str, lang: &
         if reuse {
             let mut b = std::mem::replace(&mut old_blocks[i], placeholder());
             b.set_start_line(span.start);
+            let block_text = lines[span.start..span.end].join("\n");
             if matches!(span.kind, SpanKind::Text) {
                 if let Some(tb) = b.as_any_mut().downcast_mut::<TextBlock>() {
-                    let block_text = lines[span.start..span.end].join("\n");
                     if tb.content.text() != block_text {
                         tb.content =
                             crate::text_widget::Content::with_text(&block_text);
                     }
                 }
+                new_blocks.push(b);
+            } else if b.to_md() != block_text {
+                new_blocks.push(build_block(span, &lines, lang));
+            } else {
+                new_blocks.push(b);
             }
-            new_blocks.push(b);
         } else {
             new_blocks.push(build_block(span, &lines, lang));
         }

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::event_loop::ActiveEventLoop;
+use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
@@ -593,12 +593,12 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if self.last_autosave_attempt.elapsed() >= Duration::from_millis(500) {
             self.last_autosave_attempt = Instant::now();
             self.try_autosave();
         }
-        self.drain_shell_actions(_event_loop);
+        self.drain_shell_actions(event_loop);
         self.drain_browser_open();
         if let Some(w) = &self.window {
             if !self.handle.is_null() {
@@ -608,6 +608,12 @@ impl ApplicationHandler for App {
         if let Some(w) = &self.browser_window {
             w.request_redraw();
         }
+        // request_redraw alone doesn't reliably wake the loop on Wayland
+        // when idle; pin a hard wake-up so the autosave check actually
+        // runs even with no input or compositor frame callback arriving.
+        event_loop.set_control_flow(ControlFlow::WaitUntil(
+            Instant::now() + Duration::from_millis(500),
+        ));
     }
 }
 

@@ -204,6 +204,50 @@ pub fn move_into(item_path: &Path, folder: &Path) -> std::io::Result<PathBuf> {
     Ok(dest)
 }
 
+/// Bumps each path's mtime so it sorts immediately above `anchor` in date-descending order.
+/// Items keep their relative order: the first path in `items` lands closest above the anchor.
+pub fn reorder_before(items: &[PathBuf], anchor: &Path) -> std::io::Result<()> {
+    let anchor_meta = std::fs::metadata(anchor)?;
+    let anchor_mtime = anchor_meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+    // Spread the dragged items across one second of mtime above the anchor.
+    // The earliest in `items` gets the highest mtime so it sorts first under
+    // descending order — matches the user's drag-order expectation.
+    let n = items.len();
+    if n == 0 { return Ok(()); }
+    let step_ms: u64 = (1000 / n.max(1) as u64).max(1);
+    for (i, path) in items.iter().enumerate() {
+        let offset_ms = (n - i) as u64 * step_ms;
+        let new_time = anchor_mtime + std::time::Duration::from_millis(offset_ms);
+        let ft = filetime::FileTime::from_system_time(new_time);
+        let _ = filetime::set_file_mtime(path, ft);
+    }
+    Ok(())
+}
+
+/// Bumps each path's mtime above every existing item in `parent`, preserving drag order.
+/// Used when dropping items at the very top of the grid.
+pub fn reorder_to_top(items: &[PathBuf], parent: &Path) -> std::io::Result<()> {
+    let mut max_mtime = SystemTime::UNIX_EPOCH;
+    if let Ok(entries) = std::fs::read_dir(parent) {
+        for entry in entries.flatten() {
+            if let Ok(meta) = entry.metadata() {
+                if let Ok(t) = meta.modified() {
+                    if t > max_mtime { max_mtime = t; }
+                }
+            }
+        }
+    }
+    let base = max_mtime.max(SystemTime::now() - std::time::Duration::from_secs(1));
+    let n = items.len();
+    if n == 0 { return Ok(()); }
+    for (i, path) in items.iter().enumerate() {
+        let new_time = base + std::time::Duration::from_millis((n - i) as u64 * 10 + 100);
+        let ft = filetime::FileTime::from_system_time(new_time);
+        let _ = filetime::set_file_mtime(path, ft);
+    }
+    Ok(())
+}
+
 pub fn create_folder(parent: &Path) -> std::io::Result<PathBuf> {
     let mut name = "New Folder".to_string();
     let mut n = 1usize;

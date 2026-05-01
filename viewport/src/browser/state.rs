@@ -18,8 +18,34 @@ pub struct BrowserState {
     /// holds the next path the host shell should open; drained each frame.
     pub pending_open: Option<PathBuf>,
     pub context_menu: Option<ContextMenu>,
+    pub drag: Option<DragState>,
     pub current_modifiers: Modifiers,
     pub cursor_pos: Point,
+}
+
+/// pixels the cursor has to move past the press point before a drag activates.
+const DRAG_THRESHOLD_PX: f32 = 4.0;
+
+#[derive(Debug, Clone)]
+pub struct DragState {
+    pub items: Vec<PathBuf>,
+    pub start: Point,
+    pub current: Point,
+    /// false until the cursor has moved past DRAG_THRESHOLD_PX from start.
+    pub active: bool,
+    pub hover: Option<DragHover>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DragHover {
+    pub path: PathBuf,
+    pub is_folder: bool,
+}
+
+impl DragState {
+    fn dragging_path(&self, p: &PathBuf) -> bool {
+        self.items.iter().any(|i| i == p)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +85,11 @@ pub enum BrowserMessage {
     ContextRename,
     ContextDuplicate,
     ContextTrash,
+    DragMove(Point),
+    DragEnd,
+    DragCancel,
+    CardHoverEnter { path: PathBuf, is_folder: bool },
+    CardHoverExit(PathBuf),
 }
 
 impl BrowserState {
@@ -76,6 +107,7 @@ impl BrowserState {
             rename_text: String::new(),
             pending_open: None,
             context_menu: None,
+            drag: None,
             current_modifiers: Modifiers::empty(),
             cursor_pos: Point::ORIGIN,
         }
@@ -101,8 +133,25 @@ impl BrowserState {
                 self.context_menu = None;
             }
             BrowserMessage::Select(path) => {
-                self.apply_selection(path);
                 self.context_menu = None;
+                let mods = self.current_modifiers;
+                let plain_press = !mods.command() && !mods.shift();
+                let already_selected = self.selected.contains(&path) && self.selected.len() >= 1;
+                if plain_press && already_selected && self.renaming.is_none() {
+                    // Path is already part of the selection; arm a drag instead
+                    // of collapsing the selection to just this one card.
+                    let items: Vec<PathBuf> = self.selected.iter().cloned().collect();
+                    self.drag = Some(DragState {
+                        items,
+                        start: self.cursor_pos,
+                        current: self.cursor_pos,
+                        active: false,
+                        hover: None,
+                    });
+                } else {
+                    self.apply_selection(path);
+                    self.drag = None;
+                }
             }
             BrowserMessage::StartRename(path) => {
                 let stem = path
@@ -233,6 +282,53 @@ impl BrowserState {
                 }
                 self.refresh();
             }
+            BrowserMessage::DragMove(point) => {
+                if let Some(drag) = self.drag.as_mut() {
+                    drag.current = point;
+                    if !drag.active {
+                        let dx = point.x - drag.start.x;
+                        let dy = point.y - drag.start.y;
+                        if (dx * dx + dy * dy).sqrt() > DRAG_THRESHOLD_PX {
+                            drag.active = true;
+                        }
+                    }
+                }
+            }
+            BrowserMessage::DragEnd => {
+                let Some(drag) = self.drag.take() else { return };
+                if !drag.active {
+                    return;
+                }
+                let Some(hover) = drag.hover.clone() else { return };
+                if drag.dragging_path(&hover.path) {
+                    return;
+                }
+                if hover.is_folder {
+                    for path in &drag.items {
+                        let _ = model::move_into(path, &hover.path);
+                    }
+                    self.selected.clear();
+                    self.selection_anchor = None;
+                } else {
+                    let _ = model::reorder_before(&drag.items, &hover.path);
+                }
+                self.refresh();
+            }
+            BrowserMessage::DragCancel => {
+                self.drag = None;
+            }
+            BrowserMessage::CardHoverEnter { path, is_folder } => {
+                if let Some(drag) = self.drag.as_mut() {
+                    drag.hover = Some(DragHover { path, is_folder });
+                }
+            }
+            BrowserMessage::CardHoverExit(path) => {
+                if let Some(drag) = self.drag.as_mut() {
+                    if drag.hover.as_ref().map(|h| &h.path) == Some(&path) {
+                        drag.hover = None;
+                    }
+                }
+            }
         }
     }
 
@@ -250,6 +346,26 @@ impl BrowserState {
 
     pub fn is_selected(&self, item: &BrowserItem) -> bool {
         self.selected.contains(&item.path)
+    }
+
+    /// True when `item` is part of an active (cursor moved past threshold) drag.
+    pub fn is_dragging(&self, item: &BrowserItem) -> bool {
+        match self.drag.as_ref() {
+            Some(d) if d.active => d.items.iter().any(|p| p == &item.path),
+            _ => false,
+        }
+    }
+
+    /// True when `item` is the currently hovered drop target during an active drag,
+    /// and dropping there would actually do something (target isn't part of the drag).
+    pub fn is_drop_target(&self, item: &BrowserItem) -> bool {
+        match self.drag.as_ref() {
+            Some(d) if d.active => match &d.hover {
+                Some(h) => h.path == item.path && !d.dragging_path(&h.path),
+                None => false,
+            },
+            _ => false,
+        }
     }
 
     pub fn item_kind_is_file(item: &BrowserItem) -> bool {

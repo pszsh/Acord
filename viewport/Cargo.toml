@@ -27,6 +27,7 @@ base64 = "0.22"
 arboard = "3"
 ureq = "3"
 trash = "5"
+filetime = "0.2"
 
 [build-dependencies]
 cbindgen = "0.29"

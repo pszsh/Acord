@@ -52,9 +52,19 @@ impl Config {
     }
 
     pub fn notes_dir(&self) -> PathBuf {
-        self.data.get("autoSaveDirectory")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| config_dir().join("notes"))
+        let default = config_dir().join("notes");
+        match self.data.get("autoSaveDirectory") {
+            Some(s) => {
+                let trimmed = s.trim();
+                if trimmed.is_empty() {
+                    default
+                } else {
+                    let p = PathBuf::from(trimmed);
+                    if p.is_dir() { p } else { default }
+                }
+            }
+            None => default,
+        }
     }
 
     pub fn auto_pair_flags(&self) -> u32 {

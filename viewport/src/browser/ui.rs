@@ -28,10 +28,13 @@ pub fn view(state: &BrowserState) -> Element<'_, BrowserMessage, Theme, iced_wgp
         responsive(|size| scrollable(grid(state, size)).height(Length::Fill).into()).into()
     };
 
-    // Captures right-clicks that fall between cards. Cards have their own
-    // on_right_press, so this only fires on the gaps and empty regions.
+    // Captures right-clicks between cards plus drag motion/release that
+    // happens off-card. Cards have their own on_right_press / on_press, so
+    // this body-level mouse_area only sees the gaps for those.
     let body: Element<_, _, _> = mouse_area(body_inner)
         .on_right_press(BrowserMessage::ShowEmptyContextMenu)
+        .on_move(BrowserMessage::DragMove)
+        .on_release(BrowserMessage::DragEnd)
         .into();
 
     let main: Element<_, _, _> = column![
@@ -207,6 +210,8 @@ fn card<'a>(
     let p = palette::current();
     let selected = state.is_selected(item);
     let renaming = state.is_renaming(item);
+    let dragging = state.is_dragging(item);
+    let drop_target = state.is_drop_target(item);
 
     let title_size = 12.0 * scale;
     let title_h = title_size * 1.4 + 4.0;
@@ -247,16 +252,30 @@ fn card<'a>(
         .height(Length::Fixed(card_h))
         .padding(CARD_PAD)
         .clip(true)
-        .style(move |_t: &Theme| container::Style {
-            background: Some(Background::Color(if selected { p.surface1 } else { p.surface0 })),
-            border: Border {
-                color: if selected { p.blue } else { Color::TRANSPARENT },
-                width: if selected { 2.0 } else { 0.0 },
-                radius: (8.0 * scale).into(),
-            },
-            text_color: Some(p.text),
-            shadow: Default::default(),
-            snap: false,
+        .style(move |_t: &Theme| {
+            let (border_color, border_width, bg) = if drop_target {
+                (p.green, 2.0, p.surface1)
+            } else if selected {
+                (p.blue, 2.0, p.surface1)
+            } else {
+                (p.surface2, 1.0, p.surface0)
+            };
+            let bg = if dragging {
+                Color { a: 0.5, ..bg }
+            } else {
+                bg
+            };
+            container::Style {
+                background: Some(Background::Color(bg)),
+                border: Border {
+                    color: border_color,
+                    width: border_width,
+                    radius: (8.0 * scale).into(),
+                },
+                text_color: Some(p.text),
+                shadow: Default::default(),
+                snap: false,
+            }
         });
 
     let open_msg = match item.kind {
@@ -264,13 +283,16 @@ fn card<'a>(
         BrowserItemKind::File => BrowserMessage::Open(item_path.clone()),
     };
 
+    let is_folder = !is_file;
     mouse_area(body)
         .on_press(BrowserMessage::Select(item_path.clone()))
         .on_double_click(open_msg)
         .on_right_press(BrowserMessage::ShowContextMenu {
-            path: item_path,
+            path: item_path.clone(),
             is_file,
         })
+        .on_enter(BrowserMessage::CardHoverEnter { path: item_path.clone(), is_folder })
+        .on_exit(BrowserMessage::CardHoverExit(item_path))
         .into()
 }
 
@@ -462,7 +484,7 @@ fn menu_column<'a>(
         .style(move |_t: &Theme| container::Style {
             background: Some(Background::Color(p.surface1)),
             border: Border {
-                color: p.surface2,
+                color: p.overlay1,
                 width: 1.0,
                 radius: 6.0.into(),
             },
@@ -505,7 +527,7 @@ fn menu_separator() -> Element<'static, BrowserMessage, Theme, iced_wgpu::Render
     container(Space::new().width(Length::Fill).height(Length::Fixed(1.0)))
         .padding(Padding { top: 4.0, right: 6.0, bottom: 4.0, left: 6.0 })
         .style(move |_t: &Theme| container::Style {
-            background: Some(Background::Color(p.surface2)),
+            background: Some(Background::Color(p.overlay0)),
             border: Border::default(),
             text_color: None,
             shadow: Default::default(),
