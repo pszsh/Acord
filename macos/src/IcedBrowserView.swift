@@ -90,6 +90,12 @@ class IcedBrowserView: NSView {
         browser_refresh(h)
     }
 
+    /// forwards a numeric command to the browser FFI.
+    func sendCommand(_ command: UInt32) {
+        guard let h = browserHandle else { return }
+        browser_send_command(h, command)
+    }
+
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         guard let h = browserHandle else { return }
@@ -120,6 +126,19 @@ class IcedBrowserView: NSView {
         guard let h = browserHandle else { return }
         let pt = convert(event.locationInWindow, from: nil)
         browser_mouse_event(h, Float(pt.x), Float(pt.y), 255, false)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        guard let h = browserHandle else { return }
+        let pt = convert(event.locationInWindow, from: nil)
+        browser_mouse_event(h, Float(pt.x), Float(pt.y), 1, true)
+    }
+
+    override func rightMouseUp(with event: NSEvent) {
+        guard let h = browserHandle else { return }
+        let pt = convert(event.locationInWindow, from: nil)
+        browser_mouse_event(h, Float(pt.x), Float(pt.y), 1, false)
     }
 
     override func scrollWheel(with event: NSEvent) {

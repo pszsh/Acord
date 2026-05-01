@@ -132,6 +132,8 @@ class AppState: ObservableObject {
     private var autoSaveDirty = false
     private var autoSaveCoolingDown = false
     private let autoSaveQueue = DispatchQueue(label: "com.acord.autosave")
+    /// fires synchronously after a load/new note swap so the host shell can push the new text into the viewport before the autosave timer reads stale viewport state.
+    var onLoadedTextChanged: ((String) -> Void)?
     /// Per-note autosave file path, established on the first write and never
     /// changed for the rest of the session. Stops the title-derived filename
     /// from re-deriving on every keystroke and littering the notes directory
@@ -314,6 +316,7 @@ class AppState: ObservableObject {
         currentFileURL = nil
         currentFileFormat = .markdown
         refreshNoteList()
+        onLoadedTextChanged?(documentText)
     }
 
     func selectNote(_ id: UUID, extend: Bool = false, range: Bool = false) {
@@ -346,6 +349,7 @@ class AppState: ObservableObject {
             documentText = bridge.getText(id)
             modified = false
             evaluate()
+            onLoadedTextChanged?(documentText)
         }
     }
 
@@ -392,6 +396,15 @@ class AppState: ObservableObject {
     func loadNoteFromFile(_ url: URL) {
         let format = FileFormat.from(filename: url.lastPathComponent)
         if let (id, text) = bridge.loadNote(path: url.path) {
+            // pin the autosave path before touching documentText so the didSet
+            // autosave path resolution lands on the actual file rather than a
+            // title-derived sibling.
+            let dir = URL(fileURLWithPath: ConfigManager.shared.autoSaveDirectory)
+                .standardizedFileURL
+            let parent = url.deletingLastPathComponent().standardizedFileURL
+            if format.isMarkdown && parent == dir {
+                autoSavePaths[id] = url
+            }
             currentNoteID = id
             currentFileURL = url
             currentFileFormat = format
@@ -400,19 +413,11 @@ class AppState: ObservableObject {
             } else {
                 documentText = text
             }
-            // Lock the autosave path to the loaded file when it lives in the
-            // notes dir. Outside that dir, the user picked their own path —
-            // we won't shadow it with an autosave duplicate.
-            let dir = URL(fileURLWithPath: ConfigManager.shared.autoSaveDirectory)
-                .standardizedFileURL
-            let parent = url.deletingLastPathComponent().standardizedFileURL
-            if format.isMarkdown && parent == dir {
-                autoSavePaths[id] = url
-            }
             modified = false
             let _ = bridge.cacheSave(id)
             evaluate()
             refreshNoteList()
+            onLoadedTextChanged?(documentText)
         }
     }
 

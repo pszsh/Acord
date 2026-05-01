@@ -400,6 +400,23 @@ impl App {
                 use iced_wgpu::core::keyboard;
                 use iced_wgpu::core::Event as IcedEvent;
                 let pressed = event.state == ElementState::Pressed;
+
+                if pressed {
+                    if let Some(action) = match_shortcut(self.modifiers, &event.logical_key) {
+                        let msg = match action {
+                            MenuAction::ZoomIn => Some(browser::BrowserMessage::ScaleUp),
+                            MenuAction::ZoomOut => Some(browser::BrowserMessage::ScaleDown),
+                            MenuAction::ZoomReset => Some(browser::BrowserMessage::ScaleReset),
+                            _ => None,
+                        };
+                        if let Some(msg) = msg {
+                            handle.state.update(msg);
+                            handle.needs_redraw = true;
+                            return;
+                        }
+                    }
+                }
+
                 let modifiers = decode_winit_modifiers(self.modifiers);
                 let key = winit_key_to_iced(&event.logical_key);
                 let text = event.text.as_ref().map(|s| iced_wgpu::core::SmolStr::new(s.as_str()));

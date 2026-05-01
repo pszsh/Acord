@@ -86,6 +86,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         observeDocumentTitle()
 
         observeDocumentText()
+        wireLoadedTextSync()
         syncThemeToViewport()
         syncGutterPrefsToViewport()
         syncSettingsToViewport()
@@ -731,11 +732,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     @objc private func zoomIn() {
+        if let browser = DocumentBrowserController.shared, browser.isKeyWindow {
+            browser.sendCommand(7)
+            return
+        }
         ConfigManager.shared.zoomLevel += 1
         NotificationCenter.default.post(name: .settingsChanged, object: nil)
     }
 
     @objc private func zoomOut() {
+        if let browser = DocumentBrowserController.shared, browser.isKeyWindow {
+            browser.sendCommand(8)
+            return
+        }
         let current = ConfigManager.shared.zoomLevel
         if 11 + current > 8 {
             ConfigManager.shared.zoomLevel -= 1
@@ -744,6 +753,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     @objc private func zoomReset() {
+        if let browser = DocumentBrowserController.shared, browser.isKeyWindow {
+            browser.sendCommand(9)
+            return
+        }
         ConfigManager.shared.zoomLevel = 0
         NotificationCenter.default.post(name: .settingsChanged, object: nil)
     }
@@ -805,6 +818,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 if vp.getText() == text { return }
                 vp.setText(text)
             }
+    }
+
+    /// pushes loaded note text into the viewport synchronously so the autosave timer and quit handler can never observe stale viewport state across a note swap.
+    private func wireLoadedTextSync() {
+        appState.onLoadedTextChanged = { [weak self] text in
+            guard let self = self, let vp = self.viewport else { return }
+            if vp.getText() != text {
+                vp.setText(text)
+            }
+            self.lastAutosavedHash = text.hashValue
+        }
     }
 
     private func syncTextFromViewport() {

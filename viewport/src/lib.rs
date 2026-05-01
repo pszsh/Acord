@@ -14,7 +14,7 @@ pub mod oklab;
 pub mod palette;
 pub mod selection;
 pub mod sidecar;
-mod syntax;
+pub mod syntax;
 pub mod table_block;
 pub mod text_block;
 pub mod text_widget;
@@ -503,6 +503,20 @@ pub extern "C" fn browser_take_pending_open(handle: *mut BrowserHandle) -> *mut 
 pub extern "C" fn browser_refresh(handle: *mut BrowserHandle) {
     let h = match unsafe { handle.as_mut() } { Some(h) => h, None => return };
     browser::handle::refresh(h);
+}
+
+/// dispatches a numeric zoom command into the browser's scale state.
+#[unsafe(no_mangle)]
+pub extern "C" fn browser_send_command(handle: *mut BrowserHandle, command: u32) {
+    let h = match unsafe { handle.as_mut() } { Some(h) => h, None => return };
+    let msg = match command {
+        7 => browser::BrowserMessage::ScaleUp,
+        8 => browser::BrowserMessage::ScaleDown,
+        9 => browser::BrowserMessage::ScaleReset,
+        _ => return,
+    };
+    h.state.update(msg);
+    h.needs_redraw = true;
 }
 
 #[unsafe(no_mangle)]

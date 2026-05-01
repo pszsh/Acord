@@ -45,4 +45,12 @@ class DocumentBrowserController {
             window.makeKeyAndOrderFront(nil)
         }
     }
+
+    /// true while the browser window is the focused window.
+    var isKeyWindow: Bool { window.isKeyWindow }
+
+    /// forwards a numeric command to the embedded browser view.
+    func sendCommand(_ command: UInt32) {
+        view.sendCommand(command)
+    }
 }

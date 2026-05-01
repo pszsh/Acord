@@ -142,6 +142,11 @@ char *browser_take_pending_open(struct BrowserHandle *handle);
 
 void browser_refresh(struct BrowserHandle *handle);
 
+/**
+ * dispatches a numeric zoom command into the browser's scale state.
+ */
+void browser_send_command(struct BrowserHandle *handle, uint32_t command);
+
 uint32_t viewport_render_mode(struct ViewportHandle *handle);
 
 #endif  /* ACORD_VIEWPORT_H */

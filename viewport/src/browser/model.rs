@@ -1,8 +1,10 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use super::preview::{highlight_preview, PreviewLine};
+
 const SUPPORTED_EXTS: &[&str] = &["md", "txt", "markdown", "mdown"];
-const PREVIEW_LINES: usize = 20;
+const PREVIEW_LINES: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BrowserItemKind {
@@ -17,6 +19,7 @@ pub struct BrowserItem {
     pub kind: BrowserItemKind,
     pub modified: SystemTime,
     pub preview: String,
+    pub preview_lines: Vec<PreviewLine>,
 }
 
 /// Folders first, then files; both in date-modified descending order.
@@ -41,6 +44,7 @@ pub fn scan_directory(dir: &Path) -> Vec<BrowserItem> {
                 kind: BrowserItemKind::Folder,
                 modified,
                 preview: folder_summary(&path),
+                preview_lines: Vec::new(),
             });
         } else {
             let ext = path
@@ -56,12 +60,16 @@ pub fn scan_directory(dir: &Path) -> Vec<BrowserItem> {
                 .map(str::to_string)
                 .unwrap_or(name);
 
+            let preview = file_preview(&path);
+            let preview_lines = highlight_preview(&preview);
+
             files.push(BrowserItem {
                 path: path.clone(),
                 name: display,
                 kind: BrowserItemKind::File,
                 modified,
-                preview: file_preview(&path),
+                preview,
+                preview_lines,
             });
         }
     }
@@ -206,6 +214,17 @@ pub fn create_folder(parent: &Path) -> std::io::Result<PathBuf> {
     let dest = parent.join(name);
     std::fs::create_dir(&dest)?;
     Ok(dest)
+}
+
+/// Creates a fresh folder next to `items` and moves each one inside.
+/// Items already living in the destination are skipped to avoid same-name self-moves.
+pub fn create_folder_with_items(parent: &Path, items: &[PathBuf]) -> std::io::Result<PathBuf> {
+    let folder = create_folder(parent)?;
+    for item in items {
+        if item.parent() == Some(folder.as_path()) { continue; }
+        let _ = move_into(item, &folder);
+    }
+    Ok(folder)
 }
 
 /// Sends the path to the OS trash; falls back to permanent delete on platforms without trash support.

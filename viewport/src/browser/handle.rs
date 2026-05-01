@@ -150,7 +150,19 @@ pub fn render(handle: &mut BrowserHandle) {
         .events
         .push(Event::Window(window::Event::RedrawRequested(iced_wgpu::core::time::Instant::now())));
 
-    // First UI build receives input events and emits messages.
+    // pre-scans events so the modifier and cursor state are visible to message handlers fired this frame.
+    for ev in &handle.events {
+        match ev {
+            Event::Keyboard(iced_wgpu::core::keyboard::Event::ModifiersChanged(m)) => {
+                handle.state.current_modifiers = *m;
+            }
+            Event::Mouse(iced_wgpu::core::mouse::Event::CursorMoved { position }) => {
+                handle.state.cursor_pos = *position;
+            }
+            _ => {}
+        }
+    }
+
     let cache = std::mem::take(&mut handle.cache);
     let mut ui = UserInterface::build(
         ui::view(&handle.state),
