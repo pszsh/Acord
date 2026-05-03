@@ -1102,13 +1102,24 @@ impl EditorState {
         }
     }
 
-    /// saves the document to file bytes, embedding the sidecar archive
+    /// returns the clean markdown body; the archive lives in a separate channel.
     pub fn save_doc(&mut self) -> String {
-        let body = self.get_clean_text();
+        self.get_clean_text()
+    }
+
+    /// returns the archive zip bytes the shell should embed for in-library .md files.
+    pub fn save_sidecar_bytes(&mut self) -> Option<Vec<u8>> {
         self.rebuild_modules();
         let sidecar = self.build_sidecar();
         let block_files = self.build_block_files();
-        sidecar::embed_archive(&body, &sidecar, &block_files)
+        sidecar::build_archive_bytes(&sidecar, &block_files)
+    }
+
+    /// applies an archive zip's metadata back into the document.
+    pub fn apply_sidecar_bytes(&mut self, bytes: &[u8]) {
+        if let Some(sc) = sidecar::extract_archive_bytes(bytes) {
+            self.apply_sidecar(&sc);
+        }
     }
 
     /// builds the per-block `.cord` source files for the sidecar archive

@@ -134,48 +134,137 @@ fn gutter_fade_t(distance: usize) -> f32 {
     (distance as f32 / max_d).min(1.0)
 }
 
-/// Build iced Spans from a LayoutRun's glyphs, grouping consecutive glyphs by color.
-/// `font_size_px` drives perceptual brightness compensation against the
-/// dark-theme background — see `oklab::lighten_for_size`.
+/// builds iced Spans from cosmic glyphs, grouping by (color, weight, style) and skipping marker ranges.
 fn build_color_spans<'a>(
     text: &'a str,
     glyphs: &[cosmic_text::LayoutGlyph],
+    attrs_list: &cosmic_text::AttrsList,
+    base_font: Font,
     font_size_px: f32,
+    marker_ranges: &[std::ops::Range<usize>],
 ) -> Vec<Span<'a>> {
+    use iced_wgpu::core::font::{Style as IcedStyle, Weight as IcedWeight};
+
     fn cosmic_to_iced(c: cosmic_text::Color, font_size_px: f32) -> Color {
         let raw = Color::from_rgba8(c.r(), c.g(), c.b(), c.a() as f32 / 255.0);
         crate::oklab::lighten_for_size(raw, font_size_px)
     }
 
-    if glyphs.is_empty() {
-        return vec![Span::new(text)];
-    }
-
-    let mut spans = Vec::new();
-    let mut seg_start = 0usize;
-    let mut cur_color: Option<cosmic_text::Color> = glyphs.first().and_then(|g| g.color_opt);
-
-    for glyph in glyphs {
-        if glyph.color_opt != cur_color {
-            let end = glyph.start.min(text.len());
-            if end > seg_start {
-                let mut span = Span::new(&text[seg_start..end]);
-                if let Some(c) = cur_color {
-                    span = span.color(cosmic_to_iced(c, font_size_px));
-                }
-                spans.push(span);
-            }
-            seg_start = end;
-            cur_color = glyph.color_opt;
+    fn cosmic_to_iced_weight(w: cosmic_text::Weight) -> IcedWeight {
+        match w.0 {
+            0..=149 => IcedWeight::Thin,
+            150..=249 => IcedWeight::ExtraLight,
+            250..=349 => IcedWeight::Light,
+            350..=449 => IcedWeight::Normal,
+            450..=549 => IcedWeight::Medium,
+            550..=649 => IcedWeight::Semibold,
+            650..=749 => IcedWeight::Bold,
+            750..=849 => IcedWeight::ExtraBold,
+            _ => IcedWeight::Black,
         }
     }
 
-    if seg_start < text.len() {
-        let mut span = Span::new(&text[seg_start..]);
-        if let Some(c) = cur_color {
+    fn cosmic_to_iced_style(s: cosmic_text::Style) -> IcedStyle {
+        match s {
+            cosmic_text::Style::Normal => IcedStyle::Normal,
+            cosmic_text::Style::Italic => IcedStyle::Italic,
+            cosmic_text::Style::Oblique => IcedStyle::Oblique,
+        }
+    }
+
+    /// span grouping key — color repr plus iced weight/style.
+    type StyleKey = (Option<u32>, IcedWeight, IcedStyle);
+
+    let style_at = |byte_idx: usize| -> (IcedWeight, IcedStyle) {
+        let attrs = attrs_list.get_span(byte_idx);
+        (cosmic_to_iced_weight(attrs.weight), cosmic_to_iced_style(attrs.style))
+    };
+
+    let push_span = |spans: &mut Vec<Span<'a>>,
+                     range: std::ops::Range<usize>,
+                     key: StyleKey| {
+        if range.start >= range.end || range.end > text.len() {
+            return;
+        }
+        let mut span = Span::new(&text[range]);
+        if let Some(raw) = key.0 {
+            let c = cosmic_text::Color(raw);
             span = span.color(cosmic_to_iced(c, font_size_px));
         }
+        if key.1 != IcedWeight::Normal || key.2 != IcedStyle::Normal {
+            span = span.font(Font {
+                weight: key.1,
+                style: key.2,
+                ..base_font
+            });
+        }
         spans.push(span);
+    };
+
+    // subtract every marker range from the full line range.
+    let visible_segments: Vec<std::ops::Range<usize>> = if marker_ranges.is_empty() {
+        vec![0..text.len()]
+    } else {
+        let mut segs = vec![0..text.len()];
+        for marker in marker_ranges {
+            let mut next = Vec::with_capacity(segs.len() + 1);
+            for seg in segs.into_iter() {
+                if marker.end <= seg.start || marker.start >= seg.end {
+                    next.push(seg);
+                } else {
+                    if seg.start < marker.start {
+                        next.push(seg.start..marker.start);
+                    }
+                    if marker.end < seg.end {
+                        next.push(marker.end..seg.end);
+                    }
+                }
+            }
+            segs = next;
+        }
+        segs
+    };
+
+    if glyphs.is_empty() {
+        // empty line — fall back to line-level attrs.
+        let (w, s) = style_at(0);
+        let key: StyleKey = (None, w, s);
+        let mut spans = Vec::new();
+        for seg in &visible_segments {
+            push_span(&mut spans, seg.clone(), key);
+        }
+        if spans.is_empty() {
+            spans.push(Span::new(text));
+        }
+        return spans;
+    }
+
+    let mut spans: Vec<Span<'a>> = Vec::new();
+    for seg in &visible_segments {
+        let mut seg_start = seg.start;
+        let mut cur_key: Option<StyleKey> = None;
+        for glyph in glyphs {
+            if glyph.start < seg.start || glyph.start >= seg.end {
+                continue;
+            }
+            let (w, s) = style_at(glyph.start);
+            let key: StyleKey = (glyph.color_opt.map(|c| c.0), w, s);
+            match cur_key {
+                None => {
+                    seg_start = glyph.start;
+                    cur_key = Some(key);
+                }
+                Some(prev) if prev != key => {
+                    push_span(&mut spans, seg_start..glyph.start, prev);
+                    seg_start = glyph.start;
+                    cur_key = Some(key);
+                }
+                _ => {}
+            }
+        }
+        if let Some(key) = cur_key {
+            push_span(&mut spans, seg_start..seg.end, key);
+        }
     }
 
     if spans.is_empty() {
@@ -1505,20 +1594,41 @@ where
             let mut child_idx = 0;
             let children_layouts: Vec<_> = layout.children().collect();
 
-            // Build paragraphs and retain in widget State. fill_paragraph
-            // stores Weak refs — the Paragraphs must survive until the
-            // renderer's prepare() phase. State lives in the widget tree.
+            // cursor line draws raw cosmic glyphs, other lines strip marker bytes for WYS.
+            let active_cursor_line = if self.is_focused_block {
+                self.cursor_line
+            } else {
+                None
+            };
+            let highlighter_borrow = state.highlighter.borrow();
+            let highlighter_any: &dyn std::any::Any = &*highlighter_borrow;
+            let syntax_highlighter = highlighter_any.downcast_ref::<crate::syntax::SyntaxHighlighter>();
             {
                 let mut paras = state.retained_paragraphs.borrow_mut();
                 paras.clear();
                 let metrics = state.line_metrics.borrow();
                 for i in 0..line_count {
                     let line_text = buffer.lines[i].text();
+                    let attrs_list = buffer.lines[i].attrs_list();
                     let glyphs: Vec<cosmic_text::LayoutGlyph> =
                         buffer.lines[i].layout_opt()
                             .map(|layouts| layouts.iter().flat_map(|l| l.glyphs.iter().cloned()).collect())
                             .unwrap_or_default();
-                    let spans = build_color_spans(line_text, &glyphs, f32::from(text_size));
+                    let marker_ranges = if active_cursor_line == Some(i) {
+                        Vec::new()
+                    } else {
+                        syntax_highlighter
+                            .map(|h| h.line_marker_ranges(i, line_text))
+                            .unwrap_or_default()
+                    };
+                    let spans = build_color_spans(
+                        line_text,
+                        &glyphs,
+                        attrs_list,
+                        font,
+                        f32::from(text_size),
+                        &marker_ranges,
+                    );
                     let visual_rows = metrics.get(i).map(|m| m.visual_rows).unwrap_or(1).max(1);
                     paras.push(iced_graphics::text::Paragraph::with_spans(Text {
                         content: spans.as_slice(),

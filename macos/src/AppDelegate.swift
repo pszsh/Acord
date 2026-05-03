@@ -829,6 +829,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             }
             self.lastAutosavedHash = text.hashValue
         }
+        appState.takeArchiveBytesFromViewport = { [weak self] in
+            self?.viewport?.takeSidecarBytes()
+        }
+        appState.applyArchiveBytesToViewport = { [weak self] data in
+            self?.viewport?.applySidecarBytes(data)
+        }
     }
 
     private func syncTextFromViewport() {

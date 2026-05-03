@@ -84,6 +84,23 @@ char *viewport_get_text(struct ViewportHandle *handle);
 
 void viewport_free_string(char *s);
 
+/**
+ * returns the archive zip bytes (or null when empty); writes the length to len_out.
+ */
+uint8_t *viewport_take_sidecar_bytes(struct ViewportHandle *handle, uintptr_t *len_out);
+
+/**
+ * applies archive zip bytes back into the document.
+ */
+void viewport_apply_sidecar_bytes(struct ViewportHandle *handle,
+                                  const uint8_t *bytes,
+                                  uintptr_t len);
+
+/**
+ * frees byte buffers returned by viewport_take_sidecar_bytes.
+ */
+void viewport_free_bytes(uint8_t *ptr, uintptr_t len);
+
 void viewport_set_theme(struct ViewportHandle *handle, const char *name);
 
 void viewport_set_line_indicator(struct ViewportHandle *handle, const char *mode);

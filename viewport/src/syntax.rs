@@ -111,6 +111,8 @@ pub struct SyntaxHighlighter {
     current_line: usize,
     line_decors: Vec<LineDecor>,
     user_idents: HashMap<String, u8>,
+    /// per-line tree-sitter spans for fenced code body lines, by absolute line index.
+    code_block_spans: HashMap<usize, Vec<(Range<usize>, SyntaxHighlight)>>,
 }
 
 impl SyntaxHighlighter {
@@ -153,6 +155,82 @@ impl SyntaxHighlighter {
         self.current_line = 0;
 
         self.scan_user_idents(source);
+        self.scan_fenced_code_blocks(source);
+    }
+
+    /// runs each language-tagged fenced block through tree-sitter and stashes per-line spans.
+    fn scan_fenced_code_blocks(&mut self, source: &str) {
+        self.code_block_spans.clear();
+        let lines: Vec<&str> = source.split('\n').collect();
+        let mut i = 0;
+        while i < lines.len() {
+            let is_md = i < self.line_kinds.len()
+                && self.line_kinds[i] == LineKind::Markdown;
+            if !is_md {
+                i += 1;
+                continue;
+            }
+            let trimmed = lines[i].trim_start();
+            if !trimmed.starts_with("```") {
+                i += 1;
+                continue;
+            }
+            let lang_label = trimmed.strip_prefix("```").unwrap_or("").trim();
+
+            let mut j = i + 1;
+            while j < lines.len() {
+                let jis_md = j < self.line_kinds.len()
+                    && self.line_kinds[j] == LineKind::Markdown;
+                if jis_md && lines[j].trim_start().starts_with("```") {
+                    break;
+                }
+                j += 1;
+            }
+
+            let body_start_line = i + 1;
+            let body_end_line = j; // exclusive
+            if body_end_line > body_start_line {
+                if let Some(canonical) = canonical_code_lang(lang_label) {
+                    let body_start_byte = self.line_offsets[body_start_line];
+                    let body_end_byte = if body_end_line < self.line_offsets.len() {
+                        self.line_offsets[body_end_line].saturating_sub(1)
+                    } else {
+                        source.len()
+                    };
+                    let body_end_byte = body_end_byte.min(source.len());
+                    if body_end_byte > body_start_byte {
+                        let body = &source[body_start_byte..body_end_byte];
+                        let spans = highlight_source(body, &canonical);
+                        for span in spans {
+                            let abs_start = body_start_byte + span.start;
+                            let abs_end = body_start_byte + span.end;
+                            for line_idx in body_start_line..body_end_line {
+                                let line_byte_start = self.line_offsets[line_idx];
+                                let line_byte_end = if line_idx + 1 < self.line_offsets.len() {
+                                    self.line_offsets[line_idx + 1].saturating_sub(1)
+                                } else {
+                                    source.len()
+                                };
+                                if abs_start >= line_byte_end { continue; }
+                                if abs_end <= line_byte_start { break; }
+                                let local_start = abs_start.saturating_sub(line_byte_start);
+                                let local_end = abs_end.min(line_byte_end) - line_byte_start;
+                                if local_end > local_start {
+                                    self.code_block_spans
+                                        .entry(line_idx)
+                                        .or_default()
+                                        .push((
+                                            local_start..local_end,
+                                            SyntaxHighlight { kind: span.kind },
+                                        ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            i = j + 1; // skip past closing fence (or break out if unclosed)
+        }
     }
 
     /// Walk the source, find every identifier introduction site (let, fn,
@@ -232,6 +310,29 @@ impl SyntaxHighlighter {
                 }
             }
         }
+    }
+
+    /// byte ranges of inline format markers on a non-fenced markdown line, empty otherwise.
+    pub fn line_marker_ranges(&self, line_idx: usize, line_text: &str) -> Vec<Range<usize>> {
+        if line_idx >= self.line_kinds.len() {
+            return Vec::new();
+        }
+        if self.line_kinds[line_idx] != LineKind::Markdown {
+            return Vec::new();
+        }
+        if line_idx < self.line_decors.len() {
+            match self.line_decors[line_idx] {
+                LineDecor::CodeBlock
+                | LineDecor::FenceMarker
+                | LineDecor::HorizontalRule => return Vec::new(),
+                _ => {}
+            }
+        }
+        parse_inline(line_text, 0)
+            .into_iter()
+            .filter(|(_, h)| h.kind == MD_FORMAT_MARKER)
+            .map(|(r, _)| r)
+            .collect()
     }
 
     fn highlight_markdown(&self, line: &str) -> Vec<(Range<usize>, SyntaxHighlight)> {
@@ -824,6 +925,7 @@ impl highlighter::Highlighter for SyntaxHighlighter {
             current_line: 0,
             line_decors: Vec::new(),
             user_idents: HashMap::new(),
+            code_block_spans: HashMap::new(),
         };
         h.rebuild(&settings.source);
         h
@@ -863,6 +965,9 @@ impl highlighter::Highlighter for SyntaxHighlighter {
             }
 
             if self.in_fenced_code {
+                if let Some(spans) = self.code_block_spans.get(&ln) {
+                    return spans.clone().into_iter();
+                }
                 return vec![(0..line.len(), SyntaxHighlight { kind: MD_CODE_BLOCK })].into_iter();
             }
 
@@ -1014,6 +1119,49 @@ pub fn highlight_font(kind: u8) -> Option<Font> {
         MD_TASK_DONE => Some(Font { weight: Weight::Bold, ..EDITOR_FONT }),
         _ => None,
     }
+}
+
+/// maps a fenced-code label to a tree-sitter language id, recursing on the trailing extension for dotted labels.
+fn canonical_code_lang(label: &str) -> Option<String> {
+    let label = label.trim().to_ascii_lowercase();
+    if label.is_empty() {
+        return None;
+    }
+    let direct = match label.as_str() {
+        "rust" | "rs" => Some("rust"),
+        "py" | "python" => Some("python"),
+        "js" | "javascript" | "mjs" | "cjs" => Some("javascript"),
+        "ts" | "typescript" => Some("typescript"),
+        "tsx" => Some("tsx"),
+        "jsx" => Some("javascript"),
+        "c" | "h" => Some("c"),
+        "cpp" | "c++" | "cc" | "cxx" | "hpp" => Some("cpp"),
+        "go" => Some("go"),
+        "rb" | "ruby" => Some("ruby"),
+        "sh" | "bash" | "shell" | "zsh" => Some("bash"),
+        "java" => Some("java"),
+        "html" | "htm" => Some("html"),
+        "css" => Some("css"),
+        "scss" => Some("scss"),
+        "json" => Some("json"),
+        "lua" => Some("lua"),
+        "php" => Some("php"),
+        "toml" => Some("toml"),
+        "yaml" | "yml" => Some("yaml"),
+        "swift" => Some("swift"),
+        "zig" => Some("zig"),
+        "sql" => Some("sql"),
+        "make" | "makefile" => Some("make"),
+        "md" | "markdown" => Some("markdown"),
+        _ => None,
+    };
+    if let Some(d) = direct {
+        return Some(d.to_string());
+    }
+    if let Some(idx) = label.rfind('.') {
+        return canonical_code_lang(&label[idx + 1..]);
+    }
+    None
 }
 
 pub fn compute_line_decors(source: &str) -> Vec<LineDecor> {

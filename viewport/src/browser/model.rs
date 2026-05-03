@@ -81,7 +81,10 @@ pub fn scan_directory(dir: &Path) -> Vec<BrowserItem> {
 }
 
 pub fn file_preview(path: &Path) -> String {
-    let Ok(text) = std::fs::read_to_string(path) else { return String::new() };
+    // bytes-first so the binary archive trailer doesn't trip the utf-8 decode.
+    let Ok(bytes) = std::fs::read(path) else { return String::new() };
+    let (text_bytes, _) = crate::sidecar::extract_from_md(&bytes);
+    let text = String::from_utf8_lossy(&text_bytes);
     let body = strip_sidecar_archive(&text);
     if body_looks_blank(body) {
         return "(empty note)".to_string();

@@ -90,6 +90,23 @@ class RustBridge {
         return (id, text)
     }
 
+    /// installs a doc from already-decoded text — used when the shell read raw bytes
+    /// itself (so it could split off the binary archive trailer) and just needs a UUID.
+    func installDocument(text: String) -> UUID? {
+        guard let ptr = acord_doc_new() else { return nil }
+        text.withCString { cstr in
+            acord_doc_set_text(ptr, cstr)
+        }
+        let uuidStr = cacheSaveRaw(ptr)
+        guard let id = UUID(uuidString: uuidStr) else {
+            acord_doc_free(ptr)
+            return nil
+        }
+        if let old = docs[id] { acord_doc_free(old) }
+        docs[id] = ptr
+        return id
+    }
+
     func cacheSave(_ id: UUID) -> Bool {
         guard let ptr = docs[id] else { return false }
         guard let cstr = acord_cache_save(ptr) else { return false }

@@ -242,8 +242,6 @@ pub extern "C" fn viewport_get_text(handle: *mut ViewportHandle) -> *mut c_char 
         Some(h) => h,
         None => return std::ptr::null_mut(),
     };
-    // Goes through `save_doc` so any tables with persistent metadata get
-    // their data round-tripped via the embedded sidecar archive comment.
     let text = h.state.save_doc();
     CString::new(text).unwrap_or_default().into_raw()
 }
@@ -252,6 +250,57 @@ pub extern "C" fn viewport_get_text(handle: *mut ViewportHandle) -> *mut c_char 
 pub extern "C" fn viewport_free_string(s: *mut c_char) {
     if s.is_null() { return; }
     unsafe { drop(CString::from_raw(s)); }
+}
+
+/// returns the archive zip bytes (or null when empty); writes the length to len_out.
+#[unsafe(no_mangle)]
+pub extern "C" fn viewport_take_sidecar_bytes(
+    handle: *mut ViewportHandle,
+    len_out: *mut usize,
+) -> *mut u8 {
+    let h = match unsafe { handle.as_mut() } {
+        Some(h) => h,
+        None => {
+            if !len_out.is_null() { unsafe { *len_out = 0; } }
+            return std::ptr::null_mut();
+        }
+    };
+    let bytes = match h.state.save_sidecar_bytes() {
+        Some(b) => b,
+        None => {
+            if !len_out.is_null() { unsafe { *len_out = 0; } }
+            return std::ptr::null_mut();
+        }
+    };
+    let mut boxed = bytes.into_boxed_slice();
+    if !len_out.is_null() { unsafe { *len_out = boxed.len(); } }
+    let ptr = boxed.as_mut_ptr();
+    std::mem::forget(boxed);
+    ptr
+}
+
+/// applies archive zip bytes back into the document.
+#[unsafe(no_mangle)]
+pub extern "C" fn viewport_apply_sidecar_bytes(
+    handle: *mut ViewportHandle,
+    bytes: *const u8,
+    len: usize,
+) {
+    let h = match unsafe { handle.as_mut() } {
+        Some(h) => h,
+        None => return,
+    };
+    if bytes.is_null() || len == 0 { return; }
+    let slice = unsafe { std::slice::from_raw_parts(bytes, len) };
+    h.state.apply_sidecar_bytes(slice);
+    h.needs_redraw = true;
+}
+
+/// frees byte buffers returned by viewport_take_sidecar_bytes.
+#[unsafe(no_mangle)]
+pub extern "C" fn viewport_free_bytes(ptr: *mut u8, len: usize) {
+    if ptr.is_null() || len == 0 { return; }
+    unsafe { drop(Box::from_raw(std::slice::from_raw_parts_mut(ptr, len))); }
 }
 
 #[unsafe(no_mangle)]

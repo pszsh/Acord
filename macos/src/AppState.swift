@@ -134,6 +134,10 @@ class AppState: ObservableObject {
     private let autoSaveQueue = DispatchQueue(label: "com.acord.autosave")
     /// fires synchronously after a load/new note swap so the host shell can push the new text into the viewport before the autosave timer reads stale viewport state.
     var onLoadedTextChanged: ((String) -> Void)?
+    /// drains the document's archive zip from the viewport for embed-on-save.
+    var takeArchiveBytesFromViewport: (() -> Data?)?
+    /// applies an archive zip's metadata back into the viewport.
+    var applyArchiveBytesToViewport: ((Data) -> Void)?
     /// Per-note autosave file path, established on the first write and never
     /// changed for the rest of the session. Stops the title-derived filename
     /// from re-deriving on every keystroke and littering the notes directory
@@ -166,9 +170,21 @@ class AppState: ObservableObject {
         let text = documentText
         let noteID = currentNoteID
         let url = resolveAutoSaveURL(noteID: noteID, text: text)
+        let archive = takeArchiveBytesFromViewport?()
+        let inLibrary = isAcordNote(url)
+        let payload: Data = {
+            let textData = Data(text.utf8)
+            if inLibrary, let archive = archive {
+                return AppState.embedArchiveInMd(text: textData, archive: archive)
+            }
+            return textData
+        }()
 
         autoSaveQueue.async { [weak self] in
-            Self.writeAutoSaveFile(at: url, text: text)
+            try? payload.write(to: url, options: .atomic)
+            if !inLibrary {
+                self?.writeExternalSidecar(for: url, archive: archive)
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
                 guard let self = self else { return }
                 self.autoSaveCoolingDown = false
@@ -287,6 +303,82 @@ class AppState: ObservableObject {
         try? text.write(to: url, atomically: true, encoding: .utf8)
     }
 
+    /// magic separating the markdown body from the appended raw zip; surrounding
+    /// NULs trip text editors into binary mode so the archive shows as garbage.
+    static let binarySentinel: Data = {
+        var d = Data()
+        d.append(0x0A) // \n
+        d.append(0x00)
+        d.append(contentsOf: "ACORD-ARCHIVE".utf8)
+        d.append(0x00)
+        d.append(0x0A) // \n
+        return d
+    }()
+
+    /// splits raw file bytes on the binary sentinel into (text, optional archive zip).
+    static func splitFileBytes(_ data: Data) -> (Data, Data?) {
+        let sentinel = binarySentinel
+        guard let range = data.range(of: sentinel, options: .backwards) else {
+            return (data, nil)
+        }
+        let text = data.subdata(in: 0..<range.lowerBound)
+        let archive = data.subdata(in: range.upperBound..<data.count)
+        return (text, archive.isEmpty ? nil : archive)
+    }
+
+    /// concatenates text + sentinel + archive, ensuring a newline before the sentinel.
+    static func embedArchiveInMd(text: Data, archive: Data) -> Data {
+        var out = Data(capacity: text.count + binarySentinel.count + archive.count)
+        out.append(text)
+        if !text.isEmpty && text.last != 0x0A {
+            out.append(0x0A)
+        }
+        out.append(binarySentinel)
+        out.append(archive)
+        return out
+    }
+
+    /// true when url is an .md inside the configured notes library (recursive).
+    func isAcordNote(_ url: URL) -> Bool {
+        let format = FileFormat.from(filename: url.lastPathComponent)
+        guard format.isMarkdown else { return false }
+        let dir = URL(fileURLWithPath: ConfigManager.shared.autoSaveDirectory)
+            .standardizedFileURL.resolvingSymlinksInPath()
+        let standardized = url.standardizedFileURL.resolvingSymlinksInPath()
+        return standardized.path.hasPrefix(dir.path + "/")
+            || standardized.path == dir.path
+    }
+
+    /// path under <notes_dir>/.external/ for an external file's archive companion.
+    func externalSidecarPath(for original: URL) -> URL {
+        let trimmed = original.standardizedFileURL.path
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let encoded = trimmed.map { ch -> Character in
+            (ch == "/" || ch == "\\" || ch == ":") ? "." : ch
+        }
+        let name = String(encoded) + ".acord"
+        return URL(fileURLWithPath: ConfigManager.shared.autoSaveDirectory)
+            .appendingPathComponent(".external", isDirectory: true)
+            .appendingPathComponent(name)
+    }
+
+    /// reads the companion archive zip for an external file, if it exists.
+    func readExternalSidecar(for original: URL) -> Data? {
+        try? Data(contentsOf: externalSidecarPath(for: original))
+    }
+
+    /// writes (or clears) the companion archive for an external file.
+    func writeExternalSidecar(for original: URL, archive: Data?) {
+        let path = externalSidecarPath(for: original)
+        if let archive = archive, !archive.isEmpty {
+            let parent = path.deletingLastPathComponent()
+            try? FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+            try? archive.write(to: path, options: .atomic)
+        } else {
+            try? FileManager.default.removeItem(at: path)
+        }
+    }
+
     /// Strip the `<!-- acord-archive ... -->` sidecar comment from `text`.
     /// The markdown body before the comment is the user's actual content;
     /// non-markdown destinations (.rs, .json, .csv-source, etc.) must not
@@ -361,7 +453,7 @@ class AppState: ObservableObject {
         bridge.setText(currentNoteID, text: documentText)
         if let url = currentFileURL {
             let textToSave = textForExternalSave(format: currentFileFormat)
-            try? textToSave.write(to: url, atomically: true, encoding: .utf8)
+            writeNoteFile(text: textToSave, to: url)
         }
         let _ = bridge.cacheSave(currentNoteID)
         modified = false
@@ -371,7 +463,7 @@ class AppState: ObservableObject {
     func saveNoteToFile(_ url: URL) {
         let format = FileFormat.from(filename: url.lastPathComponent)
         let textToSave = textForExternalSave(format: format)
-        try? textToSave.write(to: url, atomically: true, encoding: .utf8)
+        writeNoteFile(text: textToSave, to: url)
         currentFileURL = url
         currentFileFormat = format
         // An explicit save-to-disk locks the autosave path to the same file
@@ -381,6 +473,24 @@ class AppState: ObservableObject {
             autoSavePaths[currentNoteID] = url
         }
         modified = false
+    }
+
+    /// embeds the binary archive into in-library .md files; for everything else
+    /// writes plain text and stashes the archive at <notes_dir>/.external/.
+    private func writeNoteFile(text: String, to url: URL) {
+        let archive = takeArchiveBytesFromViewport?()
+        let inLibrary = isAcordNote(url)
+        let textData = Data(text.utf8)
+        let payload: Data
+        if inLibrary, let archive = archive {
+            payload = AppState.embedArchiveInMd(text: textData, archive: archive)
+        } else {
+            payload = textData
+        }
+        try? payload.write(to: url, options: .atomic)
+        if !inLibrary {
+            writeExternalSidecar(for: url, archive: archive)
+        }
     }
 
     /// Project the in-memory `documentText` onto the right shape for an
@@ -395,29 +505,35 @@ class AppState: ObservableObject {
 
     func loadNoteFromFile(_ url: URL) {
         let format = FileFormat.from(filename: url.lastPathComponent)
-        if let (id, text) = bridge.loadNote(path: url.path) {
-            // pin the autosave path before touching documentText so the didSet
-            // autosave path resolution lands on the actual file rather than a
-            // title-derived sibling.
-            let dir = URL(fileURLWithPath: ConfigManager.shared.autoSaveDirectory)
-                .standardizedFileURL
-            let parent = url.deletingLastPathComponent().standardizedFileURL
-            if format.isMarkdown && parent == dir {
-                autoSavePaths[id] = url
-            }
-            currentNoteID = id
-            currentFileURL = url
-            currentFileFormat = format
-            if format.isCSV {
-                documentText = csvToMarkdownTable(text)
-            } else {
-                documentText = text
-            }
-            modified = false
-            let _ = bridge.cacheSave(id)
-            evaluate()
-            refreshNoteList()
-            onLoadedTextChanged?(documentText)
+        guard let bytes = try? Data(contentsOf: url) else { return }
+
+        let inLibrary = isAcordNote(url)
+        let (textBytes, embeddedArchive): (Data, Data?) = inLibrary
+            ? AppState.splitFileBytes(bytes)
+            : (bytes, nil)
+        let archive = embeddedArchive ?? (inLibrary ? nil : readExternalSidecar(for: url))
+        let text = String(data: textBytes, encoding: .utf8) ?? ""
+
+        guard let id = bridge.installDocument(text: text) else { return }
+
+        if format.isMarkdown {
+            autoSavePaths[id] = url
+        }
+        currentNoteID = id
+        currentFileURL = url
+        currentFileFormat = format
+        if format.isCSV {
+            documentText = csvToMarkdownTable(text)
+        } else {
+            documentText = text
+        }
+        modified = false
+        let _ = bridge.cacheSave(id)
+        evaluate()
+        refreshNoteList()
+        onLoadedTextChanged?(documentText)
+        if let archive = archive {
+            applyArchiveBytesToViewport?(archive)
         }
     }
 
@@ -573,8 +689,20 @@ class AppState: ObservableObject {
     func writeAutosavedCopy(text: String) {
         let noteID = currentNoteID
         let url = resolveAutoSaveURL(noteID: noteID, text: text)
-        autoSaveQueue.async {
-            Self.writeAutoSaveFile(at: url, text: text)
+        let archive = takeArchiveBytesFromViewport?()
+        let inLibrary = isAcordNote(url)
+        let payload: Data = {
+            let textData = Data(text.utf8)
+            if inLibrary, let archive = archive {
+                return AppState.embedArchiveInMd(text: textData, archive: archive)
+            }
+            return textData
+        }()
+        autoSaveQueue.async { [weak self] in
+            try? payload.write(to: url, options: .atomic)
+            if !inLibrary {
+                self?.writeExternalSidecar(for: url, archive: archive)
+            }
         }
     }
 

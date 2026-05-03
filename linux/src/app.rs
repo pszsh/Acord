@@ -15,8 +15,10 @@ use acord_viewport::{
     viewport_set_line_indicator, viewport_set_gutter_rainbow,
     viewport_set_auto_pair_flags,
     viewport_send_command, viewport_free_string,
+    viewport_take_sidecar_bytes, viewport_apply_sidecar_bytes, viewport_free_bytes,
     ViewportHandle,
 };
+use acord_viewport::sidecar;
 use acord_viewport::browser::{self, BrowserHandle};
 use acord_viewport::handle as viewport_handle;
 use acord_viewport::editor::ShellAction;
@@ -207,21 +209,97 @@ impl App {
     fn drain_browser_open(&mut self) {
         let Some(handle) = self.browser_handle.as_mut() else { return };
         let Some(path) = browser::handle::take_pending_open(handle) else { return };
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            let c = CString::new(text).unwrap_or_default();
-            viewport_set_text(self.handle, c.as_ptr());
-            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("md");
-            let c_ext = CString::new(ext).unwrap();
-            viewport_set_lang(self.handle, c_ext.as_ptr());
-            if let Some(w) = &self.window {
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("Acord");
-                w.set_title(&format!("{name} - Acord"));
-                w.focus_window();
-            }
-            self.current_file = Some(path);
-            self.last_autosaved_hash = None;
+        if let Ok(bytes) = std::fs::read(&path) {
+            self.load_file_bytes(&path, bytes);
         }
         self.close_browser();
+    }
+
+    /// pushes file bytes into the viewport, splitting the binary archive when the file qualifies.
+    fn load_file_bytes(&mut self, path: &std::path::Path, bytes: Vec<u8>) {
+        let (text_bytes, archive) = if self.is_acord_note(path) {
+            sidecar::extract_from_md(&bytes)
+        } else {
+            (bytes, self.read_external_sidecar(path))
+        };
+        let text = String::from_utf8_lossy(&text_bytes).into_owned();
+        let c = CString::new(text).unwrap_or_default();
+        viewport_set_text(self.handle, c.as_ptr());
+        if let Some(zip) = archive {
+            viewport_apply_sidecar_bytes(self.handle, zip.as_ptr(), zip.len());
+        }
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("md");
+        let c_ext = CString::new(ext).unwrap();
+        viewport_set_lang(self.handle, c_ext.as_ptr());
+        if let Some(w) = &self.window {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("Acord");
+            w.set_title(&format!("{name} - Acord"));
+            w.focus_window();
+        }
+        self.current_file = Some(path.to_path_buf());
+        self.last_autosaved_hash = None;
+    }
+
+    /// true when path is an .md inside the configured notes library (recursive).
+    fn is_acord_note(&self, path: &std::path::Path) -> bool {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !ext.eq_ignore_ascii_case("md") {
+            return false;
+        }
+        let notes_dir = self.config.notes_dir();
+        let canon_dir = std::fs::canonicalize(&notes_dir).unwrap_or(notes_dir);
+        let canon_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        canon_path.starts_with(&canon_dir)
+    }
+
+    /// path under <notes_dir>/.external/ for storing an external file's archive companion.
+    fn external_sidecar_path(&self, original: &std::path::Path) -> PathBuf {
+        let canon = std::fs::canonicalize(original).unwrap_or_else(|_| original.to_path_buf());
+        let s = canon.to_string_lossy();
+        let trimmed = s.trim_start_matches('/').trim_start_matches('\\');
+        let encoded: String = trimmed
+            .chars()
+            .map(|c| match c {
+                '/' | '\\' | ':' => '.',
+                _ => c,
+            })
+            .collect();
+        self.config
+            .notes_dir()
+            .join(".external")
+            .join(format!("{encoded}.acord"))
+    }
+
+    fn read_external_sidecar(&self, original: &std::path::Path) -> Option<Vec<u8>> {
+        let path = self.external_sidecar_path(original);
+        std::fs::read(path).ok()
+    }
+
+    fn write_external_sidecar(&self, original: &std::path::Path, archive: Option<&[u8]>) {
+        let path = self.external_sidecar_path(original);
+        match archive {
+            Some(bytes) if !bytes.is_empty() => {
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(&path, bytes);
+            }
+            _ => {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+
+    /// drains the current archive zip from the viewport.
+    fn take_archive_bytes(&self) -> Option<Vec<u8>> {
+        let mut len: usize = 0;
+        let ptr = viewport_take_sidecar_bytes(self.handle, &mut len as *mut usize);
+        if ptr.is_null() || len == 0 {
+            return None;
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+        viewport_free_bytes(ptr, len);
+        Some(bytes)
     }
 
     fn handle_browser_event(&mut self, event: WindowEvent) {
@@ -322,18 +400,8 @@ impl App {
             .add_filter("Markdown", &["md", "markdown"])
             .add_filter("All Files", &["*"]);
         if let Some(path) = dialog.pick_file() {
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                let c = CString::new(text).unwrap_or_default();
-                viewport_set_text(self.handle, c.as_ptr());
-                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("md");
-                let c_ext = CString::new(ext).unwrap();
-                viewport_set_lang(self.handle, c_ext.as_ptr());
-                if let Some(w) = &self.window {
-                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("Acord");
-                    w.set_title(&format!("{name} - Acord"));
-                }
-                self.current_file = Some(path);
-                self.last_autosaved_hash = None;
+            if let Ok(bytes) = std::fs::read(&path) {
+                self.load_file_bytes(&path, bytes);
             }
         }
     }
@@ -371,8 +439,18 @@ impl App {
             .to_string_lossy()
             .into_owned();
         viewport_free_string(text_ptr);
-        if std::fs::write(path, &text).is_ok() {
+
+        let archive = self.take_archive_bytes();
+        let in_library = self.is_acord_note(path);
+        let file_bytes: Vec<u8> = match (&archive, in_library) {
+            (Some(arc), true) => sidecar::embed_in_md(text.as_bytes(), arc),
+            _ => text.as_bytes().to_vec(),
+        };
+        if std::fs::write(path, &file_bytes).is_ok() {
             self.last_autosaved_hash = Some(text_hash(&text));
+        }
+        if !in_library {
+            self.write_external_sidecar(path, archive.as_deref());
         }
     }
 
@@ -424,14 +502,28 @@ impl App {
         let hash = text_hash(&text);
         if Some(hash) == self.last_autosaved_hash { return; }
 
+        // skip the launch stub so it can't overwrite last session's Untitled.md.
+        if self.current_file.is_none() && is_effectively_blank(&text) {
+            return;
+        }
+
         let path = self.current_file.clone().unwrap_or_else(|| {
             self.config.notes_dir().join("Untitled.md")
         });
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if std::fs::write(&path, &text).is_ok() {
+        let archive = self.take_archive_bytes();
+        let in_library = self.is_acord_note(&path);
+        let file_bytes: Vec<u8> = match (&archive, in_library) {
+            (Some(arc), true) => sidecar::embed_in_md(text.as_bytes(), arc),
+            _ => text.as_bytes().to_vec(),
+        };
+        if std::fs::write(&path, &file_bytes).is_ok() {
             self.last_autosaved_hash = Some(hash);
+        }
+        if !in_library {
+            self.write_external_sidecar(&path, archive.as_deref());
         }
     }
 
@@ -622,6 +714,15 @@ fn text_hash(s: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     s.hash(&mut h);
     h.finish()
+}
+
+/// true when the buffer is empty or just leading heading markers.
+fn is_effectively_blank(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    trimmed.trim_start_matches('#').trim().is_empty()
 }
 
 /// Translates winit logical keys into iced keyboard keys for direct iced

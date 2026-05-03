@@ -241,6 +241,28 @@ class IcedViewportView: NSView {
         return result
     }
 
+    /// drains the document's archive zip bytes for embed-on-save.
+    func takeSidecarBytes() -> Data? {
+        if isTornDown { return nil }
+        guard let h = viewportHandle else { return nil }
+        var len: UInt = 0
+        guard let ptr = viewport_take_sidecar_bytes(h, &len), len > 0 else { return nil }
+        let data = Data(bytes: ptr, count: Int(len))
+        viewport_free_bytes(ptr, len)
+        return data
+    }
+
+    /// applies an archive zip's metadata back into the document.
+    func applySidecarBytes(_ data: Data) {
+        if isTornDown { return }
+        guard let h = viewportHandle, !data.isEmpty else { return }
+        data.withUnsafeBytes { raw in
+            if let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) {
+                viewport_apply_sidecar_bytes(h, base, UInt(data.count))
+            }
+        }
+    }
+
     func sendCommand(_ command: UInt32) {
         guard let h = viewportHandle else { return }
         viewport_send_command(h, command)

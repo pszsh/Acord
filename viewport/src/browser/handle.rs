@@ -61,8 +61,9 @@ pub fn create(
     let backends = wgpu::Backends::METAL;
     #[cfg(target_os = "windows")]
     let backends = wgpu::Backends::DX12;
+    // accept GL alongside Vulkan so distros without a Vulkan ICD still get a browser surface.
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let backends = wgpu::Backends::VULKAN;
+    let backends = wgpu::Backends::VULKAN | wgpu::Backends::GL;
 
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
         backends,
@@ -74,23 +75,46 @@ pub fn create(
         raw_window_handle: raw_window,
     };
 
-    let surface = unsafe { instance.create_surface_unsafe(target).ok()? };
+    let surface = match unsafe { instance.create_surface_unsafe(target) } {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("acord: browser surface creation failed: {e}");
+            return None;
+        }
+    };
 
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+    let adapter = match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: Some(&surface),
         force_fallback_adapter: false,
-    }))
-    .ok()?;
+    })) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("acord: browser adapter request failed: {e}");
+            return None;
+        }
+    };
 
     let (device, queue) =
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+        match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())) {
+            Ok(dq) => dq,
+            Err(e) => {
+                eprintln!("acord: browser device request failed: {e}");
+                return None;
+            }
+        };
 
     let phys_w = (width * scale) as u32;
     let phys_h = (height * scale) as u32;
 
     let caps = surface.get_capabilities(&adapter);
-    let format = caps.formats.first().copied()?;
+    let format = match caps.formats.first().copied() {
+        Some(f) => f,
+        None => {
+            eprintln!("acord: browser surface has no compatible formats");
+            return None;
+        }
+    };
 
     surface.configure(
         &device,

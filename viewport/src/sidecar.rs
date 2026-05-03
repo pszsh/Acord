@@ -218,27 +218,63 @@ pub struct BlockFile {
     pub content: String,
 }
 
-/// Append an archive comment to the markdown body. If there's nothing to store
-/// (no block files AND no sidecar entries), returns the body unchanged.
-pub fn embed_archive(markdown: &str, sidecar: &Sidecar, block_files: &[BlockFile]) -> String {
+/// builds archive zip bytes from sidecar metadata and block files, None when both empty.
+pub fn build_archive_bytes(sidecar: &Sidecar, block_files: &[BlockFile]) -> Option<Vec<u8>> {
     if sidecar.tables.is_empty() && block_files.is_empty() {
-        return markdown.to_string();
+        return None;
     }
+    let toml_text = toml::to_string_pretty(sidecar).ok()?;
+    write_zip(&toml_text, block_files).ok()
+}
 
-    let toml_text = match toml::to_string_pretty(sidecar) {
-        Ok(t) => t,
-        Err(_) => return markdown.to_string(),
+/// parses zip bytes back into a Sidecar.
+pub fn extract_archive_bytes(bytes: &[u8]) -> Option<Sidecar> {
+    let toml_text = read_zip(bytes)?;
+    toml::from_str::<Sidecar>(&toml_text).ok()
+}
+
+/// magic separating the markdown body from the appended raw zip; the surrounding NULs
+/// trip text editors into "binary mode" so the archive shows up as garbage, not as
+/// readable base64.
+pub const BINARY_SENTINEL: &[u8] = b"\n\x00ACORD-ARCHIVE\x00\n";
+
+/// appends raw zip bytes after the markdown body, separated by BINARY_SENTINEL.
+pub fn embed_in_md(markdown: &[u8], archive: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(markdown.len() + BINARY_SENTINEL.len() + archive.len());
+    out.extend_from_slice(markdown);
+    if !markdown.ends_with(b"\n") {
+        out.push(b'\n');
+    }
+    out.extend_from_slice(BINARY_SENTINEL);
+    out.extend_from_slice(archive);
+    out
+}
+
+/// splits raw file bytes on BINARY_SENTINEL, returning (text_bytes, optional zip bytes).
+pub fn extract_from_md(bytes: &[u8]) -> (Vec<u8>, Option<Vec<u8>>) {
+    if let Some(idx) = rfind_subslice(bytes, BINARY_SENTINEL) {
+        let text = bytes[..idx].to_vec();
+        let archive_start = idx + BINARY_SENTINEL.len();
+        let archive = bytes[archive_start..].to_vec();
+        return (text, Some(archive));
+    }
+    (bytes.to_vec(), None)
+}
+
+fn rfind_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).rposition(|w| w == needle)
+}
+
+/// legacy embed format: base64-encoded zip inside an HTML comment. Kept for the
+/// round-trip tests and the load-side back-compat path; new saves go through embed_in_md.
+pub fn embed_archive(markdown: &str, sidecar: &Sidecar, block_files: &[BlockFile]) -> String {
+    let Some(zip_bytes) = build_archive_bytes(sidecar, block_files) else {
+        return markdown.to_string();
     };
-
-    let zip_bytes = match write_zip(&toml_text, block_files) {
-        Ok(b) => b,
-        Err(_) => return markdown.to_string(),
-    };
-
     let encoded = B64.encode(&zip_bytes);
-
-    // Wrap base64 to ~76 cols so the comment doesn't blow out git diffs and
-    // terminal viewers. The decoder ignores whitespace.
     let wrapped = wrap_base64(&encoded, 76);
 
     let mut out = markdown.trim_end_matches('\n').to_string();
