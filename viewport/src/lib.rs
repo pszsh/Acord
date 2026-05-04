@@ -1,8 +1,27 @@
+//! Acord viewport — the iced+wgpu editor surface and its supporting widgets.
+//!
+//! ## Reusing pieces in other apps
+//!
+//! - [`text_widget`] — the per-line `fill_paragraph` compositor. Can host any
+//!   iced `Element` inline with text.
+//! - [`widgets::menu`] — generic-Message menu strip + dropdown panel.
+//! - [`widgets::dialog`] — modal overlay + segmented-row patterns.
+//! - [`widgets::style`] — iced style functions matching Acord's chrome.
+//! - [`browser`] — the file-grid document browser.
+//! - [`palette`] — the global theme palette ([`set_palette_theme`] swaps it).
+//! - [`syntax`] — tree-sitter highlighter producing iced `Span` colors.
+//! - [`oklab`] — OKLab colour-space utilities used for tone math.
+//! - [`bridge`] — FFI helpers translating native key/mouse codes to iced events.
+//!
+//! The full editor lives in [`editor::EditorState`]; lower-level block kinds
+//! (text, table, heading, tree, hr) live in their own modules and implement
+//! the [`block::Block`] trait.
+
 use std::ffi::{c_char, c_void, CStr, CString};
 
 pub mod block;
 pub mod blocks;
-mod bridge;
+pub mod bridge;
 pub mod browser;
 pub mod editor;
 pub mod export;
@@ -12,6 +31,7 @@ pub mod hr_block;
 pub mod module;
 pub mod oklab;
 pub mod palette;
+pub mod print;
 pub mod selection;
 pub mod sidecar;
 pub mod syntax;
@@ -19,10 +39,18 @@ pub mod table_block;
 pub mod text_block;
 pub mod text_widget;
 pub mod tree_block;
+pub mod widgets;
 
 pub use acord_core::*;
 
-use editor::EditorState;
+// curated re-exports for downstream apps that want to pull individual pieces.
+pub use crate::block::{Block, BlockCommand, LayeredView, ViewCtx};
+pub use crate::editor::{EditorState, Message, RenderMode, ShellAction};
+pub use crate::palette::{Palette, current as current_palette, set_theme as set_palette_theme};
+pub use crate::selection::{BlockId, InnerPath, NodePath, Selection, TextPos};
+pub use crate::syntax::{SyntaxHighlight, SyntaxHighlighter, SyntaxSettings, EDITOR_FONT};
+pub use crate::text_widget::{Content, TextEditor};
+
 use iced_graphics::Viewport;
 use iced_runtime::user_interface;
 use iced_wgpu::core::Event;
@@ -303,6 +331,34 @@ pub extern "C" fn viewport_free_bytes(ptr: *mut u8, len: usize) {
     unsafe { drop(Box::from_raw(std::slice::from_raw_parts_mut(ptr, len))); }
 }
 
+/// renders the current document as a printable PDF; returns owned bytes the shell must free with `viewport_free_bytes`.
+#[unsafe(no_mangle)]
+pub extern "C" fn viewport_render_pdf(
+    handle: *mut ViewportHandle,
+    title: *const c_char,
+    out_len: *mut usize,
+) -> *mut u8 {
+    let h = match unsafe { handle.as_mut() } {
+        Some(h) => h,
+        None => return std::ptr::null_mut(),
+    };
+    let title_str = if title.is_null() {
+        "Acord Document".to_string()
+    } else {
+        unsafe { CStr::from_ptr(title) }.to_string_lossy().into_owned()
+    };
+    let bytes = print::render_pdf(&h.state, &title_str);
+    if bytes.is_empty() {
+        unsafe { *out_len = 0; }
+        return std::ptr::null_mut();
+    }
+    let len = bytes.len();
+    let boxed = bytes.into_boxed_slice();
+    let ptr = Box::into_raw(boxed) as *mut u8;
+    unsafe { *out_len = len; }
+    ptr
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn viewport_set_theme(handle: *mut ViewportHandle, name: *const c_char) {
     let s = if name.is_null() {
@@ -418,6 +474,7 @@ pub extern "C" fn viewport_take_shell_action(handle: *mut ViewportHandle) -> *mu
         editor::ShellAction::Quit => "quit".to_string(),
         editor::ShellAction::Settings => "settings".to_string(),
         editor::ShellAction::ExportCrate => "export_crate".to_string(),
+        editor::ShellAction::Print => "print".to_string(),
         editor::ShellAction::ToggleBrowser => "toggle_browser".to_string(),
         editor::ShellAction::SetThemeMode(v) => format!("set_theme_mode:{}", v),
         editor::ShellAction::SetLineIndicator(v) => format!("set_line_indicator:{}", v),

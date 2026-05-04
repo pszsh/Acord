@@ -225,6 +225,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         exportCrateItem.target = self
         menu.addItem(exportCrateItem)
 
+        let printItem = NSMenuItem(title: "Print...", action: #selector(printNote), keyEquivalent: "p")
+        printItem.target = self
+        menu.addItem(printItem)
+
         menu.addItem(.separator())
 
         let openStorageItem = NSMenuItem(title: "Open Storage Directory", action: #selector(openStorageDirectory), keyEquivalent: "")
@@ -459,6 +463,43 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url else { return }
             self?.appState.saveNoteToFile(url)
+        }
+    }
+
+    /// renders the document to a PDF chosen via save dialog and opens it for printing.
+    @objc private func printNote() {
+        guard let w = window, let vp = w.contentView as? IcedViewportView,
+              let handle = vp.viewportHandle else { return }
+        syncTextFromViewport()
+
+        let title = appState.currentFileURL?.deletingPathExtension().lastPathComponent ?? "Acord Document"
+        var len: UInt = 0
+        guard let ptr = title.withCString({ t in viewport_render_pdf(handle, t, &len) }), len > 0 else {
+            let alert = NSAlert()
+            alert.messageText = "Print failed"
+            alert.informativeText = "Could not render this document to PDF."
+            alert.runModal()
+            return
+        }
+        let data = Data(bytes: ptr, count: Int(len))
+        viewport_free_bytes(ptr, len)
+
+        let panel = NSSavePanel()
+        panel.title = "Print to PDF"
+        panel.prompt = "Save"
+        panel.allowedContentTypes = [.pdf]
+        panel.nameFieldStringValue = "\(title).pdf"
+        panel.beginSheetModal(for: w) { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                try data.write(to: url)
+                NSWorkspace.shared.open(url)
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "Print failed"
+                alert.informativeText = error.localizedDescription
+                alert.runModal()
+            }
         }
     }
 

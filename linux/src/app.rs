@@ -16,6 +16,7 @@ use acord_viewport::{
     viewport_set_auto_pair_flags,
     viewport_send_command, viewport_free_string,
     viewport_take_sidecar_bytes, viewport_apply_sidecar_bytes, viewport_free_bytes,
+    viewport_render_pdf,
     ViewportHandle,
 };
 use acord_viewport::sidecar;
@@ -115,6 +116,7 @@ impl App {
                 }
             }
             MenuAction::ExportCrate => { /* TODO: wire crate export */ }
+            MenuAction::Print => self.print_to_pdf(),
             MenuAction::ToggleBrowser => self.toggle_browser(event_loop),
         }
     }
@@ -182,6 +184,7 @@ impl App {
             ShellAction::Quit => event_loop.exit(),
             ShellAction::Settings => {}
             ShellAction::ExportCrate => self.dispatch_menu(MenuAction::ExportCrate, event_loop),
+            ShellAction::Print => self.print_to_pdf(),
             ShellAction::ToggleBrowser => self.toggle_browser(event_loop),
             ShellAction::SetThemeMode(v) => {
                 self.config.set("themeMode", &v);
@@ -451,6 +454,25 @@ impl App {
         }
         if !in_library {
             self.write_external_sidecar(path, archive.as_deref());
+        }
+    }
+
+    /// renders the document to a PDF chosen via save dialog.
+    fn print_to_pdf(&mut self) {
+        if self.handle.is_null() { return; }
+        let title = self.derive_default_filename();
+        let title_c = CString::new(title.clone()).unwrap_or_default();
+        let mut len: usize = 0;
+        let ptr = viewport_render_pdf(self.handle, title_c.as_ptr(), &mut len as *mut usize);
+        if ptr.is_null() || len == 0 { return; }
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+        viewport_free_bytes(ptr, len);
+
+        let dialog = rfd::FileDialog::new()
+            .add_filter("PDF", &["pdf"])
+            .set_file_name(format!("{}.pdf", title));
+        if let Some(path) = dialog.save_file() {
+            let _ = std::fs::write(&path, &bytes);
         }
     }
 

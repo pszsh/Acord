@@ -101,6 +101,13 @@ void viewport_apply_sidecar_bytes(struct ViewportHandle *handle,
  */
 void viewport_free_bytes(uint8_t *ptr, uintptr_t len);
 
+/**
+ * renders the current document as a printable PDF; returns owned bytes the shell must free with `viewport_free_bytes`.
+ */
+uint8_t *viewport_render_pdf(struct ViewportHandle *handle,
+                             const char *title,
+                             uintptr_t *out_len);
+
 void viewport_set_theme(struct ViewportHandle *handle, const char *name);
 
 void viewport_set_line_indicator(struct ViewportHandle *handle, const char *mode);

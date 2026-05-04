@@ -2,7 +2,7 @@ use std::env;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 
-const KNOWN_PLATFORMS: &[&str] = &["macos", "windows", "linux"];
+const KNOWN_PLATFORMS: &[&str] = &["macos", "windows", "linux", "ios"];
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -32,7 +32,7 @@ fn main() -> ExitCode {
                 "-File",
             ],
         ),
-        "linux" | "macos" => (
+        "linux" | "macos" | "ios" => (
             repo_root.join(format!("scripts/{platform}/{action}.sh")),
             vec!["bash"],
         ),
@@ -111,6 +111,11 @@ fn print_help() {
     eprintln!("                       --all              all six targets");
     eprintln!("                       --target <name>    e.g. macos-aarch64, windows-x86_64");
     eprintln!();
-    eprintln!("append -macos / -windows / -linux to any command to force a platform.");
+    eprintln!("append -macos / -windows / -linux / -ios to any command to force a platform.");
     eprintln!("  e.g. cargo xtask build-universal-macos");
+    eprintln!();
+    eprintln!("ios:");
+    eprintln!("  cargo xtask build-ios     build the .app bundle for the iPad simulator");
+    eprintln!("  cargo xtask install-ios   build + install + launch (paired device wins, else sim)");
+    eprintln!("  cargo xtask xcodeproj-ios generate Acord.xcodeproj for finishing in Xcode");
 }

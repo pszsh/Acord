@@ -21,6 +21,7 @@ pub enum MenuAction {
     Find,
     Settings,
     ExportCrate,
+    Print,
     ToggleBrowser,
 }
 
@@ -51,6 +52,7 @@ pub fn match_shortcut(modifiers: ModifiersState, key: &Key) -> Option<MenuAction
             (false, 'f') => Some(MenuAction::Find),
             (false, 'e') => Some(MenuAction::Evaluate),
             (true,  'e') => Some(MenuAction::ExportCrate),
+            (false, 'p') => Some(MenuAction::Print),
             (false, ',') => Some(MenuAction::Settings),
             (false, '=') | (false, '+') => Some(MenuAction::ZoomIn),
             (false, '-') => Some(MenuAction::ZoomOut),

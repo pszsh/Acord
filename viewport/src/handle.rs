@@ -10,6 +10,8 @@ use iced_wgpu::Engine;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 #[cfg(target_os = "macos")]
 use raw_window_handle::{AppKitDisplayHandle, AppKitWindowHandle};
+#[cfg(target_os = "ios")]
+use raw_window_handle::{UiKitDisplayHandle, UiKitWindowHandle};
 #[cfg(target_os = "windows")]
 use raw_window_handle::{Win32WindowHandle, WindowsDisplayHandle};
 
@@ -18,10 +20,12 @@ use crate::palette;
 use crate::table_block::TableMessage;
 use crate::ViewportHandle;
 
+#[cfg(not(target_os = "ios"))]
 struct AcordClipboard {
     board: std::cell::RefCell<arboard::Clipboard>,
 }
 
+#[cfg(not(target_os = "ios"))]
 impl clipboard::Clipboard for AcordClipboard {
     fn read(&self, _kind: clipboard::Kind) -> Option<String> {
         // arboard uses NSPasteboard on macOS, Win32 on Windows — no subprocess.
@@ -48,6 +52,17 @@ impl clipboard::Clipboard for AcordClipboard {
     }
 }
 
+/// iOS stub — UIPasteboard wiring lives on the Swift side, fed through the
+/// FFI shell-action bus when the user explicitly copies/pastes.
+#[cfg(target_os = "ios")]
+struct AcordClipboard;
+
+#[cfg(target_os = "ios")]
+impl clipboard::Clipboard for AcordClipboard {
+    fn read(&self, _kind: clipboard::Kind) -> Option<String> { None }
+    fn write(&mut self, _kind: clipboard::Kind, _contents: String) {}
+}
+
 /// Mac/Windows entry point used by the C FFI. Synthesizes the platform's
 /// display handle from the window pointer the Swift bridge provides.
 /// Returns None on platforms that need both display and window — those
@@ -65,6 +80,11 @@ pub fn create(
         RawWindowHandle::AppKit(AppKitWindowHandle::new(ptr)),
         RawDisplayHandle::AppKit(AppKitDisplayHandle::new()),
     );
+    #[cfg(target_os = "ios")]
+    let (raw_window, raw_display) = (
+        RawWindowHandle::UiKit(UiKitWindowHandle::new(ptr)),
+        RawDisplayHandle::UiKit(UiKitDisplayHandle::new()),
+    );
     #[cfg(target_os = "windows")]
     let (raw_window, raw_display) = {
         let wh = Win32WindowHandle::new(std::num::NonZero::new(ptr.as_ptr() as isize).unwrap());
@@ -73,13 +93,13 @@ pub fn create(
             RawDisplayHandle::Windows(WindowsDisplayHandle::new()),
         )
     };
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows")))]
     {
         let _ = (ptr, width, height, scale);
         return None;
     }
 
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "windows"))]
     create_native(raw_display, raw_window, width, height, scale)
 }
 
@@ -217,9 +237,12 @@ pub fn render(handle: &mut ViewportHandle) {
         &mut handle.renderer,
     );
 
+    #[cfg(not(target_os = "ios"))]
     let mut clipboard = AcordClipboard {
         board: std::cell::RefCell::new(arboard::Clipboard::new().unwrap()),
     };
+    #[cfg(target_os = "ios")]
+    let mut clipboard = AcordClipboard;
     let mut messages: Vec<Message> = Vec::new();
     let mut consumed: Vec<usize> = Vec::new();
     // Captured during the event scan, applied to `handle.state.mods` AFTER
@@ -728,11 +751,14 @@ pub fn render(handle: &mut ViewportHandle) {
     }
 
     // Drain any clipboard write the editor queued during update/tick.
+    #[cfg(not(target_os = "ios"))]
     if let Some(text) = handle.state.pending_clipboard.take() {
         if let Ok(mut board) = arboard::Clipboard::new() {
             let _ = board.set_text(text);
         }
     }
+    #[cfg(target_os = "ios")]
+    let _ = handle.state.pending_clipboard.take();
 
     handle.state.tick();
     let pending_focus = handle.state.take_pending_focus();

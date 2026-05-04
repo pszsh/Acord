@@ -288,8 +288,14 @@ pub fn trash(item_path: &Path) -> std::io::Result<()> {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 fn trash_crate_remove(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     trash::delete(path).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+}
+
+#[cfg(target_os = "ios")]
+fn trash_crate_remove(_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    Err("trash crate not available on iOS; falling back to permanent delete".into())
 }
 
 pub fn path_segments(current: &Path, root: &Path) -> Vec<(String, PathBuf)> {

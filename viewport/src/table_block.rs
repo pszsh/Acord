@@ -1673,7 +1673,7 @@ fn compute_row_height(
     (max_lines as f32 * line_h + pad_h).max(default_h)
 }
 
-fn column_letter(mut idx: usize) -> String {
+pub fn column_letter(mut idx: usize) -> String {
     let mut s = String::new();
     loop {
         s.insert(0, (b'A' + (idx % 26) as u8) as char);

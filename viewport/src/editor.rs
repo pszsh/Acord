@@ -195,6 +195,7 @@ pub enum ShellAction {
     Quit,
     Settings,
     ExportCrate,
+    Print,
     ToggleBrowser,
     SetThemeMode(String),
     SetLineIndicator(String),
@@ -853,6 +854,57 @@ impl EditorState {
             .and_then(|b| b.as_any_mut().downcast_mut::<TableBlock>())
     }
 
+    /// returns the layout index of a block id, if any.
+    fn index_of_block_id(&self, bid: crate::selection::BlockId) -> Option<usize> {
+        self.layout.iter().position(|&id| id == bid)
+    }
+
+    /// fills the first empty `[]` slot in the editing cell's formula with the clicked cell's address; returns true when the click was consumed.
+    fn try_fill_formula_slot(
+        &mut self,
+        click_block_idx: usize,
+        click_row: usize,
+        click_col: usize,
+    ) -> bool {
+        let editing = match self.editing.clone() {
+            Some(e) => e,
+            None => return false,
+        };
+        let (er, ec) = match editing.inner {
+            crate::selection::InnerPath::Cell { row, col } => (row, col),
+            _ => return false,
+        };
+        let editing_idx = match self.index_of_block_id(editing.block_id) {
+            Some(i) => i,
+            None => return false,
+        };
+        if click_block_idx == editing_idx && click_row == er && click_col == ec {
+            return false;
+        }
+        let cell_text = match self.table_block_at(editing_idx) {
+            Some(tb) => tb.rows.get(er).and_then(|row| row.get(ec)).cloned().unwrap_or_default(),
+            None => return false,
+        };
+        if !cell_text.trim_start().starts_with("/=") {
+            return false;
+        }
+        let addr = format!("{}{}", table_block::column_letter(click_col), click_row + 1);
+        let new_text = match splice_first_empty_slot(&cell_text, &addr) {
+            Some(t) => t,
+            None => return false,
+        };
+        if let Some(tb) = self.table_block_at_mut(editing_idx) {
+            if let Some(row) = tb.rows.get_mut(er) {
+                if let Some(cell) = row.get_mut(ec) {
+                    *cell = new_text;
+                }
+            }
+        }
+        self.eval_dirty = true;
+        self.last_edit = Instant::now();
+        true
+    }
+
     fn first_text_block_index(&self) -> Option<usize> {
         self.layout.iter().enumerate().find_map(|(i, id)| {
             self.registry.get(id).and_then(|b| {
@@ -1105,6 +1157,11 @@ impl EditorState {
     /// returns the clean markdown body; the archive lives in a separate channel.
     pub fn save_doc(&mut self) -> String {
         self.get_clean_text()
+    }
+
+    /// walks the live blocks in document order.
+    pub fn iter_blocks(&self) -> impl Iterator<Item = &BoxedBlock> {
+        self.layout.iter().filter_map(move |id| self.registry.get(id))
     }
 
     /// returns the archive zip bytes the shell should embed for in-library .md files.
@@ -2834,6 +2891,15 @@ impl EditorState {
                 } else {
                     None
                 };
+
+                // formula-fill interception: clicking a different cell while
+                // editing a `/=` formula fills its first empty `[]` slot with
+                // the clicked cell's address instead of switching focus.
+                if let Some((r, c)) = select_target {
+                    if self.try_fill_formula_slot(idx, r, c) {
+                        return;
+                    }
+                }
                 let edit_target = if let TableMessage::EditCell(r, c) = &tmsg {
                     Some((*r, *c))
                 } else {
@@ -4148,6 +4214,7 @@ impl EditorState {
                 item("Save As...",              "Ctrl+Shift+S", Message::Shell(ShellAction::SaveAs)),
                 sep(),
                 item("Export as Rust Library", "Ctrl+Shift+E", Message::Shell(ShellAction::ExportCrate)),
+                item("Print...",                "Ctrl+P",       Message::Shell(ShellAction::Print)),
                 sep(),
                 item("Settings...",             "Ctrl+,",       Message::Shell(ShellAction::Settings)),
                 item("Quit",                    "Ctrl+Q",       Message::Shell(ShellAction::Quit)),
@@ -4562,6 +4629,27 @@ fn parse_let_binding(line: &str) -> Option<String> {
     Some(name.to_string())
 }
 
+/// finds the first empty `[]` (whitespace allowed inside) and replaces it with `[<addr>]`.
+fn splice_first_empty_slot(text: &str, addr: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'[' {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() { j += 1; }
+            if j < bytes.len() && bytes[j] == b']' {
+                let mut out = String::with_capacity(text.len() + addr.len());
+                out.push_str(&text[..i + 1]);
+                out.push_str(addr);
+                out.push_str(&text[j..]);
+                return Some(out);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
 fn macos_key_binding(key_press: KeyPress) -> Option<Binding<Message>> {
     let KeyPress { key, modifiers, status, .. } = &key_press;
 
@@ -4809,6 +4897,7 @@ fn load_image_from_path(src: &str) -> Option<ImageCacheEntry> {
 }
 
 /// encodes a clipboard image to PNG and writes it into the on-disk cache
+#[cfg(not(target_os = "ios"))]
 pub fn write_clipboard_image_to_cache(img: &arboard::ImageData) -> Option<String> {
     let dir = dirs::home_dir()?.join(".acord").join("cache").join("images");
     std::fs::create_dir_all(&dir).ok()?;

@@ -1901,6 +1901,9 @@ impl Interpreter {
             return self.call_solved_fn(name, args, depth);
         }
 
+        // builtins are case-insensitive (spreadsheet convention: SUM, Sum, sum all work).
+        let canon = name.to_ascii_lowercase();
+        let name = canon.as_str();
         match name {
             "sin" | "cos" | "tan" | "asin" | "acos" | "atan" |
             "sqrt" | "abs" | "ln" | "log" => {
@@ -3489,6 +3492,21 @@ fn find(arr, target) {
         let f = parse_formula("A1 + B1").unwrap();
         let v = i.eval_formula(&f).unwrap();
         assert!(matches!(v, Value::Number(n) if n == 30.0));
+    }
+
+    #[test]
+    fn builtin_function_name_is_case_insensitive() {
+        let mut i = Interpreter::new();
+        i.register_table("t", vec![
+            vec!["1".into(), "2".into()],
+            vec!["3".into(), "4".into()],
+        ]);
+        i.set_current_table(Some("t"));
+        for variant in ["sum(A1:B2)", "Sum(A1:B2)", "SUM(A1:B2)", "sUm(A1:B2)"] {
+            let f = parse_formula(variant).unwrap();
+            let v = i.eval_formula(&f).unwrap();
+            assert!(matches!(v, Value::Number(n) if n == 10.0), "variant {variant}");
+        }
     }
 
     #[test]
