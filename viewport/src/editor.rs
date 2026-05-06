@@ -2485,6 +2485,8 @@ impl EditorState {
     }
 
     pub fn update(&mut self, message: Message) {
+        #[cfg(debug_assertions)]
+        println!("Received message: {:?}", message);
         if self.render_mode == RenderMode::View && !Self::message_is_view_safe(&message) {
             return;
         }
@@ -2501,7 +2503,11 @@ impl EditorState {
 
         let preserve_context_menu = matches!(
             &message,
-            Message::ShowContextMenu { .. }
+            Message::ShowContextMenu { .. }     // Opening the menu
+            | Message::FocusedTableOp(..)       // Menu item actions that operate on the focused table
+            | Message::TableMsg(_, TableMessage::CursorMove(_,_))           // Any table operation (including hover, cursor move)
+            | Message::TableMsg(_, TableMessage::CellEnter(_,_))           // Any table operation (including hover, cursor move)
+            | Message::HideContextMenu           // Don't close before processing the close
         );
         if !preserve_context_menu && self.context_menu.is_some() {
             self.context_menu = None;
