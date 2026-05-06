@@ -528,6 +528,8 @@ impl TableBlock {
     }
 
     pub fn handle(&mut self, msg: TableMessage) {
+        #[cfg(debug_assertions)]
+        println!("Table {:?} got message: {:?}", self.id, msg);
         match msg {
             TableMessage::CellChanged(row, col, val) => {
                 if self.read_only {
@@ -1502,7 +1504,7 @@ where
                 MouseArea::new(cell_container)
                     .on_press(on_msg(TableMessage::SelectCell(r, c)))
                     .on_double_click(on_msg(TableMessage::EditCell(r, c)))
-                    .on_right_press(on_msg(TableMessage::ContextMenu(r, c)))
+                    .on_right_release(on_msg(TableMessage::ContextMenu(r, c)))
                     .on_enter(on_msg(TableMessage::CellEnter(r, c)))
                     .into()
             };
