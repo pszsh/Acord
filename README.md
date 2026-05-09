@@ -61,7 +61,7 @@ Or (on linux only) you can use the nix shell:
 
 ```bash
 cd Acord
-nix-shell . --run "acord"
+nix-build && ./result
 ```
 
 ---
