@@ -2505,8 +2505,8 @@ impl EditorState {
             &message,
             Message::ShowContextMenu { .. }     // Opening the menu
             | Message::FocusedTableOp(..)       // Menu item actions that operate on the focused table
-            | Message::TableMsg(_, TableMessage::CursorMove(_,_))           // Any table operation (including hover, cursor move)
-            | Message::TableMsg(_, TableMessage::CellEnter(_,_))           // Any table operation (including hover, cursor move)
+            | Message::TableMsg(_, TableMessage::CursorMove(_,_))
+            | Message::TableMsg(_, TableMessage::CellEnter(_,_))
             | Message::HideContextMenu           // Don't close before processing the close
         );
         if !preserve_context_menu && self.context_menu.is_some() {
