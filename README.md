@@ -57,6 +57,12 @@ cargo install cargo-zigbuild
 
 Or build a single target: `cargo xtask package --target windows-aarch64`.
 
+Or (on linux only) you can use the nix shell:
+
+```bash
+cd Acord
+nix-build && ./result
+```
 
 ---
 
